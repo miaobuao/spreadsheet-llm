@@ -169,9 +169,9 @@ class SheetCompressor:
             return 'Integer'
         if isinstance(string, datetime.datetime):
             return 'yyyy/mm/dd'
-        if re.match('^(\+|-)?\d+$', string) or re.match('^\d{1,3}(,\d{1,3})*$', string): #Steven Smith
+        if re.match(r'^-?\d+$', string):
             return 'Integer'
-        if re.match('^[-+]?\d*\.?\d*$', string) or re.match('^\d{1,3}(,\d{3})*(\.\d+)?$', string): #Steven Smith/Stack Overflow (https://stackoverflow.com/questions/5917082/regular-expression-to-match-numbers-with-or-without-commas-and-decimals-in-text)
+        if re.match(r'^-?\d+\.\d+$', string):
             return 'Float'
         if re.match('^[-+]?\d*\.?\d*%$', string) or re.match('^\d{1,3}(,\d{3})*(\.\d+)?%$', string):
             return 'Percentage'
