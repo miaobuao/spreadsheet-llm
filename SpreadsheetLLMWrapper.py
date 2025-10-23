@@ -78,7 +78,16 @@ class SpreadsheetLLMWrapper:
 
         return areas, compress_dict, sheet_compressor
 
-    def write_areas(self, file, areas, sheet_compressor):
+    def serialize_areas(self, areas, sheet_compressor):
+        """Serialize areas to string representation.
+
+        Args:
+            areas: List of area tuples
+            sheet_compressor: SheetCompressor instance with row/column mappings
+
+        Returns:
+            Serialized string representation of areas
+        """
         string = ""
         converter = IndexColumnConverter()
         for i in areas:
@@ -99,10 +108,23 @@ class SpreadsheetLLMWrapper:
                 + str(original_row_end + 1)
                 + "), "
             )
+        return string
+
+    def write_areas(self, file, areas, sheet_compressor):
+        """Write serialized areas to file."""
+        string = self.serialize_areas(areas, sheet_compressor)
         with open(file, "w+", encoding="utf-8") as f:
             f.writelines(string)
 
-    def write_dict(self, file, dict):
+    def serialize_dict(self, dict):
+        """Serialize dictionary to string representation.
+
+        Args:
+            dict: Dictionary to serialize
+
+        Returns:
+            Serialized string representation of dictionary
+        """
         string = ""
         for key, value in dict.items():
             # Skip empty keys
@@ -111,14 +133,31 @@ class SpreadsheetLLMWrapper:
             # value is now list[str], join with comma
             value_str = ",".join(value) if isinstance(value, list) else str(value)
             string += str(key) + "|" + value_str + "\n"
+        return string
+
+    def write_dict(self, file, dict):
+        """Write serialized dictionary to file."""
+        string = self.serialize_dict(dict)
         with open(file, "w+", encoding="utf-8") as f:
             f.writelines(string)
 
+    def serialize_mapping(self, sheet_compressor):
+        """Serialize coordinate mapping to JSON string.
+
+        Args:
+            sheet_compressor: SheetCompressor instance with row/column mappings
+
+        Returns:
+            JSON string representation of coordinate mapping
+        """
+        mapping = sheet_compressor.get_coordinate_mapping()
+        return json.dumps(mapping, indent=2, ensure_ascii=False)
+
     def write_mapping(self, file, sheet_compressor):
         """Write coordinate mapping from compressed to original coordinates as JSON"""
-        mapping = sheet_compressor.get_coordinate_mapping()
+        mapping_str = self.serialize_mapping(sheet_compressor)
         with open(file, "w+", encoding="utf-8") as f:
-            json.dump(mapping, f, indent=2, ensure_ascii=False)
+            f.write(mapping_str)
 
     def convert_compressed_to_original(self, compressed_coord: str, sheet_compressor) -> str:
         """
