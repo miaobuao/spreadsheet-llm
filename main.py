@@ -3,16 +3,53 @@ from pathlib import Path
 import pandas as pd
 import openpyxl
 import logging
-
+import json
+from termcolor import colored
 from IndexColumnConverter import IndexColumnConverter
 from SheetCompressor import SheetCompressor
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+
+# Custom colored formatter for stdout
+class ColoredFormatter(logging.Formatter):
+    """Custom formatter that adds colors to log levels"""
+
+    LEVEL_COLORS = {
+        'DEBUG': 'cyan',
+        'INFO': 'green',
+        'WARNING': 'yellow',
+        'ERROR': 'red',
+        'CRITICAL': 'red',
+    }
+
+    def format(self, record):
+        # Format the message with the parent formatter
+        log_message = super().format(record)
+
+        # Add color to the level name in the output
+        level_name = record.levelname
+        if level_name in self.LEVEL_COLORS:
+            # Color the entire log line based on level
+            log_message = colored(log_message, self.LEVEL_COLORS[level_name])
+
+        return log_message
+
+
+# Configure logging with colored output for stdout
+# Only configure root logger to avoid duplicate logs
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.DEBUG)
+colored_formatter = ColoredFormatter(
+    fmt='[%(asctime)s][%(levelname)s] %(name)s: %(message)s',
     datefmt='%H:%M:%S'
 )
+console_handler.setFormatter(colored_formatter)
+
+# Configure root logger
+logging.root.setLevel(logging.DEBUG)
+logging.root.handlers = []
+logging.root.addHandler(console_handler)
+
+# Get logger for this module
 logger = logging.getLogger(__name__)
 
 original_size = 0
@@ -49,8 +86,6 @@ class SpreadsheetLLMWrapper:
         sheet = sheet_compressor.anchor(sheet)
         logger.info(f"After anchor, sheet shape: {sheet.shape} (rows x cols)")
 
-        sheet.to_excel("./compressed.xlsx")
-
         # Encoding
         markdown = sheet_compressor.encode(
             wb, sheet
@@ -81,21 +116,27 @@ class SpreadsheetLLMWrapper:
         compress_dict = sheet_compressor.inverted_index(markdown)
         logger.info(f"Compress dict entries: {len(compress_dict)}")
 
-        return areas, compress_dict
+        return areas, compress_dict, sheet_compressor
 
-    def write_areas(self, file, areas):
+    def write_areas(self, file, areas, sheet_compressor):
         string = ""
         converter = IndexColumnConverter()
         for i in areas:
+            # Map compressed indices back to original indices
+            original_row_start = sheet_compressor.row_mapping[i[0][0]]
+            original_col_start = sheet_compressor.column_mapping[i[0][1]]
+            original_row_end = sheet_compressor.row_mapping[i[1][0]]
+            original_col_end = sheet_compressor.column_mapping[i[1][1]]
+
             string += (
                 "("
                 + i[2]
                 + "|"
-                + converter.parse_colindex(i[0][1] + 1)
-                + str(i[0][0] + 1)
+                + converter.parse_colindex(original_col_start + 1)
+                + str(original_row_start + 1)
                 + ":"
-                + converter.parse_colindex(i[1][1] + 1)
-                + str(i[1][0] + 1)
+                + converter.parse_colindex(original_col_end + 1)
+                + str(original_row_end + 1)
                 + "), "
             )
         with open(file, "w+", encoding="utf-8") as f:
@@ -104,9 +145,17 @@ class SpreadsheetLLMWrapper:
     def write_dict(self, file, dict):
         string = ""
         for key, value in dict.items():
-            string += str(value) + "," + str(key) + "|"
+            # value is now list[str], join with comma
+            value_str = ",".join(value) if isinstance(value, list) else str(value)
+            string += value_str + "," + str(key) + "|\n"
         with open(file, "w+", encoding="utf-8") as f:
             f.writelines(string)
+
+    def write_mapping(self, file, sheet_compressor):
+        """Write coordinate mapping from compressed to original coordinates as JSON"""
+        mapping = sheet_compressor.get_coordinate_mapping()
+        with open(file, "w+", encoding="utf-8") as f:
+            json.dump(mapping, f, indent=2, ensure_ascii=False)
 
 
 if __name__ == "__main__":
@@ -117,25 +166,19 @@ if __name__ == "__main__":
     )
     if wb := wrapper.read_spreadsheet(file):
         if compress_result := wrapper.compress_spreadsheet(wb):
-            areas, compress_dict = compress_result
-            print(compress_dict)
+            areas, compress_dict, sheet_compressor = compress_result
+            base_name = "output/" + file.name.split(".")[0]
 
-            wrapper.write_areas(
-                "output/" + file.name.split(".")[0] + "_areas.txt", areas
-            )
-            wrapper.write_dict(
-                "output/" + file.name.split(".")[0] + "_dict.txt", compress_dict
-            )
+            wrapper.write_areas(base_name + "_areas.txt", areas, sheet_compressor)
+            wrapper.write_dict(base_name + "_dict.txt", compress_dict)
+            wrapper.write_mapping(base_name + "_mapping.json", sheet_compressor)
+
             original_size += os.path.getsize(file)
-            new_size += os.path.getsize(
-                "output/" + file.name.split(".")[0] + "_areas.txt"
-            )
-            new_size += os.path.getsize(
-                "output/" + file.name.split(".")[0] + "_dict.txt"
-            )
-            print("Compression Ratio: {}".format(str(original_size / new_size)))
+            new_size += os.path.getsize(base_name + "_areas.txt")
+            new_size += os.path.getsize(base_name + "_dict.txt")
+            logger.info("Compression Ratio: {}".format(str(original_size / new_size)))
         else:
-            print("compress failed")
+            logger.info("compress failed")
 
     else:
-        print("no spread sheet")
+        logger.info("no spread sheet")

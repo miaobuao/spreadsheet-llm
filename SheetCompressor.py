@@ -1,4 +1,5 @@
 import datetime
+from typing import Any
 import numpy as np
 import pandas as pd
 import re
@@ -6,6 +7,7 @@ import logging
 from pandas.tseries.api import guess_datetime_format  # type: ignore
 
 from IndexColumnConverter import IndexColumnConverter
+from CellRangeUtils import combine_cells
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
@@ -30,6 +32,8 @@ class SheetCompressor:
         self.column_candidates = []
         self.row_lengths = {}
         self.column_lengths = {}
+        self.row_mapping = {}  # Maps compressed row index -> original row index
+        self.column_mapping = {}  # Maps compressed column index -> original column index
 
     # Obtain border, fill, bold info about cell; incomplete
     def get_format(self, cell):
@@ -65,11 +69,21 @@ class SheetCompressor:
         ws = wb.active  # Get the active worksheet from openpyxl workbook
         for rowindex, i in sheet.iterrows():
             for colindex, j in enumerate(sheet.columns.tolist()):
+                # Map compressed indices back to original indices
+                original_row = self.row_mapping[rowindex]
+                original_col = self.column_mapping[colindex]
+
                 # openpyxl uses 1-based indexing for rows and columns
-                cell = ws.cell(row=rowindex + 1, column=colindex + 1)
+                # Use original indices to get cell format from workbook
+                cell = ws.cell(row=original_row + 1, column=original_col + 1)
+
+                # Generate address using COMPRESSED indices (not original)
+                # This keeps the dict compact and avoids sparse coordinates
+                address = converter.parse_colindex(colindex + 1) + str(rowindex + 1)
+
                 new_row = pd.DataFrame(
                     [
-                        converter.parse_colindex(colindex + 1) + str(rowindex + 1),
+                        address,
                         i[j],
                         self.get_format(cell),
                     ]
@@ -207,7 +221,18 @@ class SheetCompressor:
             f"Retention rate: {len(self.row_candidates)}/{len(sheet)} rows ({len(self.row_candidates)/len(sheet)*100:.1f}%), {len(self.column_candidates)}/{len(sheet.columns)} cols ({len(self.column_candidates)/len(sheet.columns)*100:.1f}%)"
         )
 
+        # Save the original row and column indices before remapping
+        original_row_indices = self.row_candidates.tolist()
+        original_col_indices = self.column_candidates.tolist()
+
         sheet = sheet.iloc[self.row_candidates, self.column_candidates]
+
+        # Create mapping: compressed index -> original index
+        self.row_mapping = {i: original_row_indices[i] for i in range(len(original_row_indices))}
+        self.column_mapping = {i: original_col_indices[i] for i in range(len(original_col_indices))}
+
+        logger.debug(f"Row mapping (compressed->original): {self.row_mapping}")
+        logger.debug(f"Column mapping (compressed->original): {self.column_mapping}")
 
         # Remap coordinates
         sheet = sheet.reset_index().drop(columns="index")
@@ -216,29 +241,51 @@ class SheetCompressor:
         return sheet
 
     # Converts markdown to value-key pair
-    def inverted_index(self, markdown):
-
-        # Takes array of Excel cells and combines adjacent cells
-        def combine_cells(array):
-
-            # Correct version
-            # 2d version of summary ranges from leetcode
-            # For each row, run summary ranges to get a 1d array, then run summary ranges for each column
-
-            # Greedy version
-            if len(array) == 1:
-                return array[0]
-            return array[0] + ":" + array[-1]
-
-        dictionary = {}
+    def inverted_index(self, markdown: pd.DataFrame):
+        dictionary: dict[Any, list[str]] = {}
         for _, i in markdown.iterrows():
             if i["Value"] in dictionary:
                 dictionary[i["Value"]].append(i["Address"])
             else:
                 dictionary[i["Value"]] = [i["Address"]]
         dictionary = {k: v for k, v in dictionary.items() if not pd.isna(k)}
-        dictionary = {k: combine_cells(v) for k, v in dictionary.items()}
-        return dictionary
+
+        # Combine cells and log examples
+        res: dict[Any, list[str]] = {}
+        for k, v in dictionary.items():
+            combined = combine_cells(v)  # Returns list[str]
+            res[k] = combined
+            # Log first 5 examples to show how cells are combined
+            if len(res) <= 5:
+                logger.debug(f"Value '{k}': {len(v)} cells -> {combined}")
+
+        logger.info(f"Inverted index created with {len(res)} unique values")
+        return res
+
+    # Get coordinate mapping from compressed to original
+    def get_coordinate_mapping(self):
+        """
+        Returns the mapping from compressed coordinates to original coordinates.
+        Format: {"rows": {compressed_idx: original_idx}, "columns": {compressed_idx: original_idx}}
+        """
+        converter = IndexColumnConverter()
+        mapping = {
+            "rows": {},
+            "columns": {}
+        }
+
+        # Convert row mapping to cell notation
+        for compressed_idx, original_idx in self.row_mapping.items():
+            mapping["rows"][str(compressed_idx + 1)] = str(original_idx + 1)
+
+        # Convert column mapping to cell notation
+        for compressed_idx, original_idx in self.column_mapping.items():
+            compressed_col = converter.parse_colindex(compressed_idx + 1)
+            original_col = converter.parse_colindex(original_idx + 1)
+            mapping["columns"][compressed_col] = original_col
+
+        logger.info(f"Coordinate mapping: {len(mapping['rows'])} rows, {len(mapping['columns'])} columns")
+        return mapping
 
     # Key-Value to Value-Key for categories
     def inverted_category(self, markdown):

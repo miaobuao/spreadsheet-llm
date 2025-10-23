@@ -11,4 +11,5 @@ dependencies = [
     "openai",
     "streamlit",
     "openpyxl>=3.1.5",
+    "termcolor>=3.1.0",
 ]

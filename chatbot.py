@@ -17,16 +17,16 @@ def process_sheet(wrapper):
     with NamedTemporaryFile(dir=".", suffix=".xlsx", delete=False) as f:
         f.write(file.getbuffer())
         wb = wrapper.read_spreadsheet(f.name)
-        areas, compress_dict = wrapper.compress_spreadsheet(wb)
+        areas, compress_dict, sheet_compressor = wrapper.compress_spreadsheet(wb)
     os.remove(f.name)
-    return areas, compress_dict
+    return areas, compress_dict, sheet_compressor
 
 
 def identify_table(wrapper, model_name):
     if file:
         args.table = True
         args.model = model_name
-        areas, compress_dict = process_sheet(wrapper)
+        areas, compress_dict, sheet_compressor = process_sheet(wrapper)
         output = wrapper.llm(args, areas, compress_dict)
         st.session_state.messages.append({"role": "assistant", "content": output})
         args.table = False
@@ -69,7 +69,7 @@ if prompt := st.chat_input():
         )
         st.chat_message("assistant").write("Please upload an Excel file first")
     else:
-        areas, compress_dict = process_sheet(wrapper)
+        areas, compress_dict, sheet_compressor = process_sheet(wrapper)
         output = wrapper.llm(args, areas, compress_dict)
         st.session_state.messages.append({"role": "assistant", "content": output})
         st.chat_message("assistant").write(output)
