@@ -27,7 +27,16 @@ K = 4
 
 
 class SheetCompressor:
-    def __init__(self):
+    def __init__(self, format_aware: bool = False):
+        """
+        Initialize SheetCompressor.
+
+        Args:
+            format_aware: If True, inverted_index will use format-aware aggregation,
+                         grouping cells by both value AND data type (category).
+                         If False (default), groups cells only by value.
+        """
+        self.format_aware = format_aware
         self.row_candidates = []
         self.column_candidates = []
         self.row_lengths = {}
@@ -242,24 +251,73 @@ class SheetCompressor:
 
     # Converts markdown to value-key pair
     def inverted_index(self, markdown: pd.DataFrame):
-        dictionary: dict[Any, list[str]] = {}
-        for _, i in markdown.iterrows():
-            if i["Value"] in dictionary:
-                dictionary[i["Value"]].append(i["Address"])
-            else:
-                dictionary[i["Value"]] = [i["Address"]]
-        dictionary = {k: v for k, v in dictionary.items() if not pd.isna(k)}
+        """
+        Create inverted index from markdown.
 
-        # Combine cells and log examples
+        Args:
+            markdown: DataFrame with columns Address, Value, and optionally Category
+
+        Returns:
+            Dictionary mapping values or categories to cell addresses
+
+        Behavior:
+            - If format_aware=False: Groups cells by value only
+              Example: {"Eagles": ["A1:A3", "B5"]}
+
+            - If format_aware=True: Smart aggregation
+              * "Other" type: Groups by value (preserve descriptive content)
+                Example: {"Eagles": ["A1:A3"], "Teams": ["B1"]}
+              * Data types: Groups by category (compress numbers/dates)
+                Example: {"Integer": ["C1:C10"], "yyyy/mm/dd": ["D1:D5"]}
+        """
+        dictionary: dict[Any, list[str]] = {}
+
+        # Check if we should use format-aware aggregation
+        use_category = self.format_aware and "Category" in markdown.columns
+
+        if use_category:
+            logger.info("Using format-aware aggregation (Other uses values, data types use categories)")
+        else:
+            logger.info("Using simple aggregation (grouping by value only)")
+
+        for _, row in markdown.iterrows():
+            value = row["Value"]
+
+            # Skip NaN values
+            if pd.isna(value):
+                continue
+
+            # Create key based on mode
+            if use_category:
+                category = row["Category"]
+                # For "Other" type, use actual value (preserve descriptive content)
+                # For data types (Integer, Float, Date, etc.), use category for compression
+                if category == "Other":
+                    key = value
+                else:
+                    # Wrap type in ${} to distinguish from literal values
+                    key = f"${{{category}}}"
+            else:
+                # Use value only for simple mode
+                key = value
+
+            # Add address to dictionary
+            if key in dictionary:
+                dictionary[key].append(row["Address"])
+            else:
+                dictionary[key] = [row["Address"]]
+
+        # Combine cells and format output
         res: dict[Any, list[str]] = {}
         for k, v in dictionary.items():
             combined = combine_cells(v)  # Returns list[str]
             res[k] = combined
+
             # Log first 5 examples to show how cells are combined
             if len(res) <= 5:
-                logger.debug(f"Value '{k}': {len(v)} cells -> {combined}")
+                logger.debug(f"Key '{k}': {len(v)} cells -> {combined}")
 
-        logger.info(f"Inverted index created with {len(res)} unique values")
+        logger.info(f"Inverted index created with {len(res)} unique entries")
         return res
 
     # Get coordinate mapping from compressed to original

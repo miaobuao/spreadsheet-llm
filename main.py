@@ -1,12 +1,8 @@
 import os
 from pathlib import Path
-import pandas as pd
-import openpyxl
 import logging
-import json
 from termcolor import colored
-from IndexColumnConverter import IndexColumnConverter
-from SheetCompressor import SheetCompressor
+from SpreadsheetLLMWrapper import SpreadsheetLLMWrapper
 
 
 # Custom colored formatter for stdout
@@ -56,129 +52,107 @@ original_size = 0
 new_size = 0
 
 
-class SpreadsheetLLMWrapper:
-
-    def __init__(self):
-        return
-
-    def read_spreadsheet(self, file):
-
-        wb = openpyxl.load_workbook(file)
-        return wb
-
-    # Takes a file, compresses it
-    def compress_spreadsheet(self, wb):
-        sheet_compressor = SheetCompressor()
-        # header=None: treat all rows as data, don't auto-generate column names
-        sheet = pd.read_excel(wb, engine="openpyxl", header=None)
-        # sheet = sheet.apply(
-        #     lambda x: x.str.replace("\n", "<br>") if x.dtype == "object" else x
-        # )
-
-        # Reset index and column names to integers
-        sheet = sheet.reset_index(drop=True)
-        sheet.columns = list(range(len(sheet.columns)))
-
-        logger.info(f"Original sheet shape: {sheet.shape} (rows x cols)")
-        logger.debug(f"First 5 rows:\n{sheet.head()}")
-
-        # Structural-anchor-based Extraction
-        sheet = sheet_compressor.anchor(sheet)
-        logger.info(f"After anchor, sheet shape: {sheet.shape} (rows x cols)")
-
-        # Encoding
-        markdown = sheet_compressor.encode(
-            wb, sheet
-        )  # Paper encodes first then anchors; I chose to do this in reverse
-        logger.info(f"Encoded markdown shape: {markdown.shape}")
-        logger.debug(f"Markdown columns: {markdown.columns.tolist()}")
-        logger.debug(f"First 10 markdown entries:\n{markdown.head(10)}")
-
-        # Data-Format Aggregation
-        markdown["Category"] = markdown["Value"].apply(
-            lambda x: sheet_compressor.get_category(x)
-        )
-        category_dict = sheet_compressor.inverted_category(markdown)
-        logger.info(f"Categories found: {set(category_dict.values())}")
-        logger.info(f"Number of unique values: {len(category_dict)}")
-
-        try:
-            areas = sheet_compressor.identical_cell_aggregation(sheet, category_dict)
-            logger.info(f"Number of areas identified: {len(areas)}")
-            logger.debug("First 10 areas:")
-            for i, area in enumerate(areas[:10]):
-                logger.debug(f"  Area {i}: {area}")
-        except RecursionError:
-            logger.error("RecursionError in identical_cell_aggregation")
-            return
-
-        # Inverted-index Translation
-        compress_dict = sheet_compressor.inverted_index(markdown)
-        logger.info(f"Compress dict entries: {len(compress_dict)}")
-
-        return areas, compress_dict, sheet_compressor
-
-    def write_areas(self, file, areas, sheet_compressor):
-        string = ""
-        converter = IndexColumnConverter()
-        for i in areas:
-            # Map compressed indices back to original indices
-            original_row_start = sheet_compressor.row_mapping[i[0][0]]
-            original_col_start = sheet_compressor.column_mapping[i[0][1]]
-            original_row_end = sheet_compressor.row_mapping[i[1][0]]
-            original_col_end = sheet_compressor.column_mapping[i[1][1]]
-
-            string += (
-                "("
-                + i[2]
-                + "|"
-                + converter.parse_colindex(original_col_start + 1)
-                + str(original_row_start + 1)
-                + ":"
-                + converter.parse_colindex(original_col_end + 1)
-                + str(original_row_end + 1)
-                + "), "
-            )
-        with open(file, "w+", encoding="utf-8") as f:
-            f.writelines(string)
-
-    def write_dict(self, file, dict):
-        string = ""
-        for key, value in dict.items():
-            # value is now list[str], join with comma
-            value_str = ",".join(value) if isinstance(value, list) else str(value)
-            string += value_str + "," + str(key) + "|\n"
-        with open(file, "w+", encoding="utf-8") as f:
-            f.writelines(string)
-
-    def write_mapping(self, file, sheet_compressor):
-        """Write coordinate mapping from compressed to original coordinates as JSON"""
-        mapping = sheet_compressor.get_coordinate_mapping()
-        with open(file, "w+", encoding="utf-8") as f:
-            json.dump(mapping, f, indent=2, ensure_ascii=False)
-
-
 if __name__ == "__main__":
+    import argparse
 
-    wrapper = SpreadsheetLLMWrapper()
-    file = Path(
-        "/Volumes/Yang/dev/contextgen_doc/benchmark/validation/dsbench/00000011/MO14-Purple-City.xlsx"
+    # Create argument parser
+    parser = argparse.ArgumentParser(
+        description='SpreadsheetLLM: Compress spreadsheet files using LLM-friendly format',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Compress a single file in simple mode
+  python main.py input.xlsx
+
+  # Compress with format-aware mode
+  python main.py input.xlsx --format-aware
+
+  # Specify custom output directory
+  python main.py input.xlsx -f -o results/
+        """
     )
+
+    # Required arguments
+    parser.add_argument(
+        'input_file',
+        type=str,
+        help='Path to the input Excel file (.xlsx)'
+    )
+
+    # Optional arguments
+    parser.add_argument(
+        '-f', '--format-aware',
+        action='store_true',
+        help='Enable format-aware aggregation (groups by value AND category)'
+    )
+
+    parser.add_argument(
+        '-o', '--output-dir',
+        type=str,
+        default='output',
+        help='Output directory for compressed files (default: output/)'
+    )
+
+    # Parse arguments
+    args = parser.parse_args()
+
+    # Log mode
+    if args.format_aware:
+        logger.info("Running in FORMAT-AWARE mode (dict groups by value AND category)")
+    else:
+        logger.info("Running in SIMPLE mode (dict groups by value only)")
+        logger.info("Use --format-aware or -f flag to enable format-aware aggregation")
+
+    # Validate input file
+    file = Path(args.input_file)
+    if not file.exists():
+        logger.error(f"Input file not found: {file}")
+        exit(1)
+
+    if file.suffix.lower() not in ['.xlsx', '.xls']:
+        logger.error(f"Input file must be an Excel file (.xlsx or .xls): {file}")
+        exit(1)
+
+    logger.info(f"Input file: {file}")
+
+    # Create output directory if it doesn't exist
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f"Output directory: {output_dir}")
+
+    # Process spreadsheet
+    wrapper = SpreadsheetLLMWrapper(format_aware=args.format_aware)
+
     if wb := wrapper.read_spreadsheet(file):
         if compress_result := wrapper.compress_spreadsheet(wb):
             areas, compress_dict, sheet_compressor = compress_result
-            base_name = "output/" + file.name.split(".")[0]
 
-            wrapper.write_areas(base_name + "_areas.txt", areas, sheet_compressor)
-            wrapper.write_dict(base_name + "_dict.txt", compress_dict)
-            wrapper.write_mapping(base_name + "_mapping.json", sheet_compressor)
+            # Generate output file names
+            base_name = output_dir / file.stem  # Use stem to get filename without extension
+            suffix = "_format_aware" if args.format_aware else ""
 
+            areas_file = str(base_name) + suffix + "_areas.txt"
+            dict_file = str(base_name) + suffix + "_dict.txt"
+            mapping_file = str(base_name) + suffix + "_mapping.json"
+
+            # Write output files
+            wrapper.write_areas(areas_file, areas, sheet_compressor)
+            wrapper.write_dict(dict_file, compress_dict)
+            wrapper.write_mapping(mapping_file, sheet_compressor)
+
+            logger.info("Output files:")
+            logger.info(f"  - {areas_file}")
+            logger.info(f"  - {dict_file}")
+            logger.info(f"  - {mapping_file}")
+
+            # Calculate compression ratio
             original_size += os.path.getsize(file)
-            new_size += os.path.getsize(base_name + "_areas.txt")
-            new_size += os.path.getsize(base_name + "_dict.txt")
-            logger.info("Compression Ratio: {}".format(str(original_size / new_size)))
+            new_size += os.path.getsize(areas_file)
+            new_size += os.path.getsize(dict_file)
+            logger.info("Compression Ratio: {:.2f}".format(original_size / new_size))
         else:
-            logger.info("compress failed")
-
+            logger.error("Compression failed")
+            exit(1)
     else:
-        logger.info("no spread sheet")
+        logger.error("Failed to read spreadsheet")
+        exit(1)
