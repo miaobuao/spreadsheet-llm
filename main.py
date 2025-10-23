@@ -1,14 +1,23 @@
-import argparse
 import os
+from pathlib import Path
 import pandas as pd
-import xlrd
+import openpyxl
+import logging
 
 from IndexColumnConverter import IndexColumnConverter
 from SheetCompressor import SheetCompressor
-from SpreadsheetLLM import SpreadsheetLLM
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 original_size = 0
 new_size = 0
+
 
 class SpreadsheetLLMWrapper:
 
@@ -16,100 +25,117 @@ class SpreadsheetLLMWrapper:
         return
 
     def read_spreadsheet(self, file):
-        if file.split('.')[-1] != 'xls':
-            return
-        try:
-            wb = xlrd.open_workbook(file, logfile=open(os.devnull,'w'), formatting_info=True)
-            return wb
-        except xlrd.biffh.XLRDError:
-            return 
 
-    #Takes a file, compresses it
+        wb = openpyxl.load_workbook(file)
+        return wb
+
+    # Takes a file, compresses it
     def compress_spreadsheet(self, wb):
         sheet_compressor = SheetCompressor()
-        sheet = pd.read_excel(wb, engine='xlrd')
-        sheet = sheet.apply(lambda x: x.str.replace('\n', '<br>') if x.dtype == 'object' else x)
+        # header=None: treat all rows as data, don't auto-generate column names
+        sheet = pd.read_excel(wb, engine="openpyxl", header=None)
+        # sheet = sheet.apply(
+        #     lambda x: x.str.replace("\n", "<br>") if x.dtype == "object" else x
+        # )
 
-        #Move columns to row 1
-        sheet.loc[-1] = sheet.columns
-        sheet.index += 1
-        sheet.sort_index(inplace=True)
+        # Reset index and column names to integers
+        sheet = sheet.reset_index(drop=True)
         sheet.columns = list(range(len(sheet.columns)))
 
-        #Structural-anchor-based Extraction
+        logger.info(f"Original sheet shape: {sheet.shape} (rows x cols)")
+        logger.debug(f"First 5 rows:\n{sheet.head()}")
+
+        # Structural-anchor-based Extraction
         sheet = sheet_compressor.anchor(sheet)
+        logger.info(f"After anchor, sheet shape: {sheet.shape} (rows x cols)")
 
-        #Encoding 
-        markdown = sheet_compressor.encode(wb, sheet) #Paper encodes first then anchors; I chose to do this in reverse
+        sheet.to_excel("./compressed.xlsx")
 
-        #Data-Format Aggregation
-        markdown['Category'] = markdown['Value'].apply(lambda x: sheet_compressor.get_category(x))
-        category_dict = sheet_compressor.inverted_category(markdown) 
+        # Encoding
+        markdown = sheet_compressor.encode(
+            wb, sheet
+        )  # Paper encodes first then anchors; I chose to do this in reverse
+        logger.info(f"Encoded markdown shape: {markdown.shape}")
+        logger.debug(f"Markdown columns: {markdown.columns.tolist()}")
+        logger.debug(f"First 10 markdown entries:\n{markdown.head(10)}")
+
+        # Data-Format Aggregation
+        markdown["Category"] = markdown["Value"].apply(
+            lambda x: sheet_compressor.get_category(x)
+        )
+        category_dict = sheet_compressor.inverted_category(markdown)
+        logger.info(f"Categories found: {set(category_dict.values())}")
+        logger.info(f"Number of unique values: {len(category_dict)}")
+
         try:
             areas = sheet_compressor.identical_cell_aggregation(sheet, category_dict)
+            logger.info(f"Number of areas identified: {len(areas)}")
+            logger.debug("First 10 areas:")
+            for i, area in enumerate(areas[:10]):
+                logger.debug(f"  Area {i}: {area}")
         except RecursionError:
+            logger.error("RecursionError in identical_cell_aggregation")
             return
 
-        #Inverted-index Translation
+        # Inverted-index Translation
         compress_dict = sheet_compressor.inverted_index(markdown)
+        logger.info(f"Compress dict entries: {len(compress_dict)}")
 
         return areas, compress_dict
 
-    def llm(self, args, area, table):
-        spreadsheet_llm = SpreadsheetLLM(args.model)
-        output = ''
-        if args.table:
-            output += spreadsheet_llm.identify_table(area) + '\n'
-        if args.question:
-            output += spreadsheet_llm.question_answer(table, args.question)
-        return output
-        
     def write_areas(self, file, areas):
-        string = ''
+        string = ""
         converter = IndexColumnConverter()
         for i in areas:
-            string += ('(' + i[2] + '|' + converter.parse_colindex(i[0][1] + 1) + str(i[0][0] + 1) + ':' 
-                        + converter.parse_colindex(i[1][1] + 1) + str(i[1][0] + 1) + '), ')
-        with open(file, 'w+', encoding="utf-8") as f:
+            string += (
+                "("
+                + i[2]
+                + "|"
+                + converter.parse_colindex(i[0][1] + 1)
+                + str(i[0][0] + 1)
+                + ":"
+                + converter.parse_colindex(i[1][1] + 1)
+                + str(i[1][0] + 1)
+                + "), "
+            )
+        with open(file, "w+", encoding="utf-8") as f:
             f.writelines(string)
 
     def write_dict(self, file, dict):
-        string = ''
+        string = ""
         for key, value in dict.items():
-            string += (str(value) + ',' + str(key) + '|')
-        with open(file, 'w+', encoding="utf-8") as f:
+            string += str(value) + "," + str(key) + "|"
+        with open(file, "w+", encoding="utf-8") as f:
             f.writelines(string)
 
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--compress', action=argparse.BooleanOptionalAction, default=True, help="compress dataset into txt files; must run for LLM to work")
-    parser.add_argument('--directory', type=str, default='VFUSE', help='directory of excel files')
-    parser.add_argument('--file', type=str, default='7b5a0a10-e241-4c0d-a896-11c7c9bf2040', help='file to work with')
-    parser.add_argument('--model', type=str, choices={'gpt-3.5', 'gpt-4', 'mistral', 'llama-2', 'llama-3', 'phi-3'}, default='gpt-3.5', help='llm to use')
-    parser.add_argument('--table', action=argparse.BooleanOptionalAction, default=True, help='Whether or not to identify number of tables')
-    parser.add_argument('--question', type=str, help='question to ask llm')
-    args = parser.parse_args()
 
     wrapper = SpreadsheetLLMWrapper()
-    
-    if args.compress:
-        for root, dirs, files in os.walk(args.directory):
-            for file in files:
-                if not (wb := wrapper.read_spreadsheet(os.path.join(root, file))):
-                    continue
-                try:
-                    areas, compress_dict = wrapper.compress_spreadsheet(wb)
-                except TypeError:
-                    continue
-                wrapper.write_areas('output/' + file.split('.')[0] + '_areas.txt', areas)
-                wrapper.write_dict('output/' + file.split('.')[0] + '_dict.txt', compress_dict)
-                original_size += os.path.getsize(os.path.join(root, file))
-                new_size += os.path.getsize('output/' + file.split('.')[0] + '_areas.txt')
-                new_size += os.path.getsize('output/' + file.split('.')[0] + '_dict.txt')
-        print('Compression Ratio: {}'.format(str(original_size / new_size)))   
+    file = Path(
+        "/Volumes/Yang/dev/contextgen_doc/benchmark/validation/dsbench/00000011/MO14-Purple-City.xlsx"
+    )
+    if wb := wrapper.read_spreadsheet(file):
+        if compress_result := wrapper.compress_spreadsheet(wb):
+            areas, compress_dict = compress_result
+            print(compress_dict)
 
-    with open('output/' + args.file + '_areas.txt') as f:
-        area = f.readlines()
-    with open('output/' + args.file + '_dict.txt') as f:
-        table = f.readlines()
-    print(wrapper.llm(args, area, table))
+            wrapper.write_areas(
+                "output/" + file.name.split(".")[0] + "_areas.txt", areas
+            )
+            wrapper.write_dict(
+                "output/" + file.name.split(".")[0] + "_dict.txt", compress_dict
+            )
+            original_size += os.path.getsize(file)
+            new_size += os.path.getsize(
+                "output/" + file.name.split(".")[0] + "_areas.txt"
+            )
+            new_size += os.path.getsize(
+                "output/" + file.name.split(".")[0] + "_dict.txt"
+            )
+            print("Compression Ratio: {}".format(str(original_size / new_size)))
+        else:
+            print("compress failed")
+
+    else:
+        print("no spread sheet")

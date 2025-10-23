@@ -1,10 +1,9 @@
 import os
-import transformers
 
 from huggingface_hub import InferenceClient
 from openai import OpenAI
 
-#If you only want to check how many tables
+# If you only want to check how many tables
 PROMPT_TABLE = """Instruction:
 Given an input that is a string denoting data of cells in a table.
 The input table contains many tuples, describing the cells with content in the spreadsheet.
@@ -17,12 +16,12 @@ Some cells with empty content in the spreadsheet are not entered.
 How many tables are there in the spreadsheet?
 INPUT: """
 
-#Part 1 of CoS
+# Part 1 of CoS
 STAGE_1_PROMPT = """Below is a question about one certain table in this spreadsheet.
 I need you to determine in which table the answer to the following question can be found, and return the RANGE of the ONE table you choose, LIKE [{'range': 'A1:F9'}].
 INPUT: """
 
-#Part 2 of CoS (after filtering out table)
+# Part 2 of CoS (after filtering out table)
 STAGE_2_PROMPT = """Instruction:
 Given an input that is a string denoting data of cells in a table and a question about this table.
 The input table includes many pairs, and each pair consists of a cell address and the text in that cell with a ',' in between, like 'A1,Year'.
@@ -34,40 +33,44 @@ I need you to find the cell address of the answer in the given table based on th
 DON'T ADD ANY OTHER WORDS."
 INPUT: """
 
-MODEL_DICT = {'mistral': 'mistralai/Mistral-7B-Instruct-v0.2',
-              'llama-2': 'meta-llama/Llama-2-7b-chat-hf',
-              'llama-3': 'meta-llama/Meta-Llama-3-8B-Instruct',
-              'phi-3': 'microsoft/Phi-3-mini-128k-instruct',
-              'gpt-3.5': 'gpt-3.5-turbo',
-              'gpt-4': 'gpt-4'}
+MODEL_DICT = {
+    "mistral": "mistralai/Mistral-7B-Instruct-v0.2",
+    "llama-2": "meta-llama/Llama-2-7b-chat-hf",
+    "llama-3": "meta-llama/Meta-Llama-3-8B-Instruct",
+    "phi-3": "microsoft/Phi-3-mini-128k-instruct",
+    "gpt-3.5": "gpt-3.5-turbo",
+    "gpt-4": "gpt-4",
+}
 
-class SpreadsheetLLM():
+
+class SpreadsheetLLM:
     def __init__(self, model):
         self.model = model
-    
+
     def call(self, prompt):
-        if self.model == 'gpt-3.5' or self.model == 'gpt-4': #OpenAI API
-          completion = OpenAI(api_key=os.environ['OPENAI_API_KEY']).chat.completions.create(
-            model=MODEL_DICT[self.model],
-            messages=[
-              {"role": "user", "content": prompt}
-            ]
-          )
-          return completion.choices[0].message.content
-        else: #Transformers InferenceClient
-            output = ''
+        if self.model == "gpt-3.5" or self.model == "gpt-4":  # OpenAI API
+            completion = OpenAI(
+                api_key=os.environ["OPENAI_API_KEY"]
+            ).chat.completions.create(
+                model=MODEL_DICT[self.model],
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return completion.choices[0].message.content
+        else:  # Transformers InferenceClient
+            output = ""
             client = InferenceClient(
-              MODEL_DICT[self.model],
-              token=os.environ['HUGGING_FACE_KEY'],
+                MODEL_DICT[self.model],
+                token=os.environ["HUGGING_FACE_KEY"],
             )
             for message in client.chat_completion(
-	            messages=[{"role": "user", "content": prompt}],
-	            max_tokens=500,
-	            stream=True,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=500,
+                stream=True,
             ):
-                output += message.choices[0].delta.content
+                if content := message.choices[0].delta.content:
+                    output += content
             return output
-    
+
     def identify_table(self, table):
         global PROMPT_TABLE
         return self.call(PROMPT_TABLE + str(table))
@@ -76,5 +79,7 @@ class SpreadsheetLLM():
         global STAGE_1_PROMPT
         global STAGE_2_PROMPT
 
-        table_range = self.call(STAGE_1_PROMPT + str(table) + '\n QUESTION:' + question)
-        return self.call(STAGE_2_PROMPT + str(question + table_range + '\n QUESTION:' + question))
+        table_range = self.call(STAGE_1_PROMPT + str(table) + "\n QUESTION:" + question)
+        return self.call(
+            STAGE_2_PROMPT + str(question + table_range + "\n QUESTION:" + question)
+        )

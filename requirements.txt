@@ -1,7 +1,6 @@
 pandas>=2.2
 numpy
-xlrd
-transformers
+openpyxl
 huggingface_hub
 openai
 streamlit
