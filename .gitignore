@@ -2,3 +2,5 @@ VFUSE
 output
 *.xls
 *.pdf
+
+__pycache__
