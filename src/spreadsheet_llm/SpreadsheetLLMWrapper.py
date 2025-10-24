@@ -6,8 +6,8 @@ from typing import Optional, List
 from pydantic import BaseModel, Field
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
-from IndexColumnConverter import IndexColumnConverter
-from SheetCompressor import SheetCompressor
+from spreadsheet_llm.IndexColumnConverter import IndexColumnConverter
+from spreadsheet_llm.SheetCompressor import SheetCompressor
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,7 @@ class CellRangeList(BaseModel):
         description="List of cell ranges found in the spreadsheet"
     )
 
+
 RECOGNIZE_PROMPT = """Instruction:
 Given an inverted index mapping cell content to their locations in a spreadsheet.
 
@@ -55,8 +56,8 @@ Your task is to:
 Use Chain of Thought reasoning to ensure accurate identification.
 """
 
-class SpreadsheetLLMWrapper:
 
+class SpreadsheetLLMWrapper:
 
     def __init__(self, format_aware: bool = False, llm: Optional[BaseChatModel] = None):
         """
@@ -338,11 +339,9 @@ class SpreadsheetLLMWrapper:
 
             response = structured_llm.invoke(messages)
             if isinstance(response, dict):
-                response = CellRangeList(**response)  # Validate dict structure
+                response = CellRangeList(**response)
             elif not isinstance(response, CellRangeList):
-                response = CellRangeList(
-                    **response.model_dump()
-                )  # Ensure Pydantic model
+                response = CellRangeList(**response.model_dump())
 
             logger.info(
                 f"Structured recognition completed. Found {len(response.items)} ranges."

@@ -1,7 +1,7 @@
 """Test script for coordinate conversion functionality"""
 import logging
 from pathlib import Path
-from SpreadsheetLLMWrapper import SpreadsheetLLMWrapper
+from spreadsheet_llm import SpreadsheetLLMWrapper
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')

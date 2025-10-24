@@ -6,8 +6,8 @@ import re
 import logging
 from pandas.tseries.api import guess_datetime_format  # type: ignore
 
-from IndexColumnConverter import IndexColumnConverter
-from CellRangeUtils import combine_cells
+from spreadsheet_llm.IndexColumnConverter import IndexColumnConverter
+from spreadsheet_llm.CellRangeUtils import combine_cells
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)

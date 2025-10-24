@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 import logging
 from termcolor import colored
-from SpreadsheetLLMWrapper import SpreadsheetLLMWrapper
+from spreadsheet_llm import SpreadsheetLLMWrapper
 
 
 # Custom colored formatter for stdout
