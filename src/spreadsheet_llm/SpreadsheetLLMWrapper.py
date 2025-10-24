@@ -281,6 +281,8 @@ class SpreadsheetLLMWrapper:
         """
         Use LLM to extract structured cell ranges from spreadsheet content with Chain of Thought reasoning.
 
+        Returns compressed coordinates. Use recognize_original() to get original coordinates.
+
         Returns a CellRangeList Pydantic model with:
         - reasoning: Step-by-step Chain of Thought explanation
         - items: List of CellRangeItem objects (each with 'title' and 'range')
@@ -290,7 +292,7 @@ class SpreadsheetLLMWrapper:
             user_prompt: Optional user instruction. If None, extracts all meaningful ranges.
 
         Returns:
-            CellRangeList Pydantic model with 'reasoning' (str) and 'items' (list of CellRangeItem)
+            CellRangeList Pydantic model with compressed coordinates
 
         Example:
             >>> from langchain_openai import ChatOpenAI
@@ -352,3 +354,52 @@ class SpreadsheetLLMWrapper:
         except Exception as e:
             logger.error(f"LLM structured output error: {str(e)}")
             raise
+
+    def recognize_original(
+        self, compress_dict, sheet_compressor, user_prompt: str | None = None
+    ) -> CellRangeList:
+        """
+        Use LLM to extract structured cell ranges and convert to original spreadsheet coordinates.
+
+        This method wraps recognize() and automatically converts compressed coordinates
+        to original spreadsheet coordinates using the sheet_compressor mappings.
+
+        Args:
+            compress_dict: Inverted index dictionary from compression
+            sheet_compressor: SheetCompressor instance with row/column mappings
+            user_prompt: Optional user instruction. If None, extracts all meaningful ranges.
+
+        Returns:
+            CellRangeList Pydantic model with original coordinates
+
+        Example:
+            >>> from langchain_openai import ChatOpenAI
+            >>> llm = ChatOpenAI(model="gpt-4o-mini")
+            >>> wrapper = SpreadsheetLLMWrapper(llm=llm)
+            >>> wb = wrapper.read_spreadsheet("data.xlsx")
+            >>> areas, compress_dict, compressor = wrapper.compress_spreadsheet(wb)
+            >>> result = wrapper.recognize_original(compress_dict, compressor)
+            >>> print(result.reasoning)
+            >>> for item in result.items:
+            ...     print(f"{item.title or 'N/A'}: {item.range}")  # Original coordinates
+        """
+        # Call recognize to get compressed coordinates
+        compressed_result = self.recognize(compress_dict, user_prompt)
+
+        # Convert all ranges to original coordinates
+        logger.info("Converting compressed coordinates to original coordinates")
+        converted_items = []
+        for item in compressed_result.items:
+            original_range = self.convert_compressed_to_original(
+                item.range, sheet_compressor
+            )
+            converted_items.append(
+                CellRangeItem(title=item.title, range=original_range)
+            )
+
+        logger.debug(f"Converted {len(converted_items)} ranges to original coordinates")
+
+        # Return new CellRangeList with original coordinates
+        return CellRangeList(
+            reasoning=compressed_result.reasoning, items=converted_items
+        )
