@@ -2,15 +2,63 @@ import json
 import logging
 import pandas as pd
 import openpyxl
+from typing import Optional, List
+from pydantic import BaseModel, Field
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import HumanMessage
 from IndexColumnConverter import IndexColumnConverter
 from SheetCompressor import SheetCompressor
 
 logger = logging.getLogger(__name__)
 
 
+class CellRangeItem(BaseModel):
+    """Simple schema for cell range with optional title."""
+
+    title: Optional[str] = Field(
+        None, description="Optional title or label for this range"
+    )
+    range: str = Field(description="Cell range address (e.g., 'A1:B5', 'C3')")
+
+
+class CellRangeList(BaseModel):
+    """List of cell ranges with reasoning (Chain of Thought)."""
+
+    reasoning: str = Field(
+        description="Step-by-step reasoning process for identifying the cell ranges. "
+        "Explain what patterns you noticed, how you identified meaningful ranges, "
+        "and why you chose these specific ranges."
+    )
+    items: List[CellRangeItem] = Field(
+        description="List of cell ranges found in the spreadsheet"
+    )
+
+RECOGNIZE_PROMPT = """Instruction:
+Given an inverted index mapping cell content to their locations in a spreadsheet.
+
+Format:
+   Each line consists of the cell content and the cell addresses where it appears, separated by '|'.
+   Format: content|cell1,cell2,cell3,...
+   Example:
+   Eagles|B12,B39,B44,B48,B52,B54
+   Purple City|D12,J12,F16,D18,E41,E49
+   ${Integer}|G14:G15,H15,G16:I17
+
+   Data formats are prefixed with '${}', like '${Integer}' or '${yyyy/mm/dd}'.
+   Cells are separated by commas.
+
+Your task is to:
+1. First, provide step-by-step reasoning about what patterns you observe in the data
+2. Explain how you identify meaningful cell ranges
+3. Then, return the identified cell ranges with optional descriptive titles
+
+Use Chain of Thought reasoning to ensure accurate identification.
+"""
+
 class SpreadsheetLLMWrapper:
 
-    def __init__(self, format_aware: bool = False):
+
+    def __init__(self, format_aware: bool = False, llm: Optional[BaseChatModel] = None):
         """
         Initialize SpreadsheetLLMWrapper.
 
@@ -18,8 +66,11 @@ class SpreadsheetLLMWrapper:
             format_aware: If True, enables format-aware aggregation in dict output.
                          Groups cells by both value AND data type (e.g., "100 (Integer)").
                          If False (default), groups cells only by value.
+            llm: LangChain ChatModel instance (e.g., ChatOpenAI, ChatAnthropic, etc.).
+                 If None, a default ChatOpenAI model will be created.
         """
         self.format_aware = format_aware
+        self.llm = llm
 
     def read_spreadsheet(self, file):
 
@@ -159,7 +210,9 @@ class SpreadsheetLLMWrapper:
         with open(file, "w+", encoding="utf-8") as f:
             f.write(mapping_str)
 
-    def convert_compressed_to_original(self, compressed_coord: str, sheet_compressor) -> str:
+    def convert_compressed_to_original(
+        self, compressed_coord: str, sheet_compressor
+    ) -> str:
         """
         Convert compressed coordinate(s) to original coordinate(s).
 
@@ -190,12 +243,18 @@ class SpreadsheetLLMWrapper:
                 return cell
 
             col_str, row_str = match
-            compressed_col = converter.parse_cellindex(col_str) - 1  # Convert to 0-based
+            compressed_col = (
+                converter.parse_cellindex(col_str) - 1
+            )  # Convert to 0-based
             compressed_row = int(row_str) - 1  # Convert to 0-based
 
             # Map to original indices
-            original_row = sheet_compressor.row_mapping.get(compressed_row, compressed_row)
-            original_col = sheet_compressor.column_mapping.get(compressed_col, compressed_col)
+            original_row = sheet_compressor.row_mapping.get(
+                compressed_row, compressed_row
+            )
+            original_col = sheet_compressor.column_mapping.get(
+                compressed_col, compressed_col
+            )
 
             # Convert back to cell notation
             original_col_str = converter.parse_colindex(original_col + 1)
@@ -205,14 +264,92 @@ class SpreadsheetLLMWrapper:
 
         def convert_range(range_str: str) -> str:
             """Convert a cell range (e.g., 'A1:B5')"""
-            if ':' in range_str:
-                start, end = range_str.split(':')
+            if ":" in range_str:
+                start, end = range_str.split(":")
                 return f"{convert_single_cell(start)}:{convert_single_cell(end)}"
             else:
                 return convert_single_cell(range_str)
 
         # Handle multiple ranges separated by commas
-        parts = compressed_coord.split(',')
+        parts = compressed_coord.split(",")
         converted_parts = [convert_range(part.strip()) for part in parts]
 
-        return ','.join(converted_parts)
+        return ",".join(converted_parts)
+
+    def recognize(self, compress_dict, user_prompt: str | None = None) -> CellRangeList:
+        """
+        Use LLM to extract structured cell ranges from spreadsheet content with Chain of Thought reasoning.
+
+        Returns a CellRangeList Pydantic model with:
+        - reasoning: Step-by-step Chain of Thought explanation
+        - items: List of CellRangeItem objects (each with 'title' and 'range')
+
+        Args:
+            compress_dict: Inverted index dictionary from compression
+            user_prompt: Optional user instruction. If None, extracts all meaningful ranges.
+
+        Returns:
+            CellRangeList Pydantic model with 'reasoning' (str) and 'items' (list of CellRangeItem)
+
+        Example:
+            >>> from langchain_openai import ChatOpenAI
+            >>> llm = ChatOpenAI(model="gpt-4o-mini")
+            >>> wrapper = SpreadsheetLLMWrapper(llm=llm)
+            >>> wb = wrapper.read_spreadsheet("data.xlsx")
+            >>> areas, compress_dict, compressor = wrapper.compress_spreadsheet(wb)
+            >>> result = wrapper.recognize(compress_dict)
+            >>> print(result.reasoning)  # See the LLM's thought process
+            >>> for item in result.items:
+            ...     print(f"{item.title or 'N/A'}: {item.range}")
+        """
+        # Check if LLM is initialized
+        if self.llm is None:
+            raise ValueError(
+                "LLM is not initialized. Please provide an LLM instance when creating "
+                "SpreadsheetLLMWrapper, e.g., SpreadsheetLLMWrapper(llm=ChatOpenAI(model='gpt-4o-mini'))"
+            )
+
+        # Serialize the compressed data
+        dict_str = self.serialize_dict(compress_dict)
+
+        # Build the user message with instruction and input
+        user_message = RECOGNIZE_PROMPT
+
+        if user_prompt:
+            user_message += f"\nAdditional instructions: {user_prompt}\n"
+
+        user_message += "\nINPUT:\n"
+        user_message += dict_str
+
+        logger.info(
+            f"Sending structured recognition request to LLM: {self.llm.__class__.__name__}"
+        )
+        logger.info("Output schema: CellRangeList")
+        logger.debug(f"User message length: {len(user_message)} chars")
+
+        try:
+            # Create a structured output version of the LLM
+            structured_llm = self.llm.with_structured_output(CellRangeList)
+
+            # Call LLM using LangChain (only user message, no system message)
+            messages = [
+                HumanMessage(content=user_message),
+            ]
+
+            response = structured_llm.invoke(messages)
+            if isinstance(response, dict):
+                response = CellRangeList(**response)  # Validate dict structure
+            elif not isinstance(response, CellRangeList):
+                response = CellRangeList(
+                    **response.model_dump()
+                )  # Ensure Pydantic model
+
+            logger.info(
+                f"Structured recognition completed. Found {len(response.items)} ranges."
+            )
+            logger.debug(f"Reasoning: {response.reasoning}")
+            return response
+
+        except Exception as e:
+            logger.error(f"LLM structured output error: {str(e)}")
+            raise
