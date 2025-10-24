@@ -5,10 +5,10 @@ This package provides tools for compressing spreadsheet data and using LLMs to e
 structured information from spreadsheets.
 """
 
-from spreadsheet_llm import CellRangeUtils
-from spreadsheet_llm.IndexColumnConverter import IndexColumnConverter
-from spreadsheet_llm.SheetCompressor import SheetCompressor
-from spreadsheet_llm.SpreadsheetLLMWrapper import (
+from spreadsheet_llm import cell_range_utils as CellRangeUtils
+from spreadsheet_llm.index_column_converter import IndexColumnConverter
+from spreadsheet_llm.sheet_compressor import SheetCompressor
+from spreadsheet_llm.spreadsheet_llm_wrapper import (
     RECOGNIZE_PROMPT,
     CellRangeItem,
     CellRangeList,

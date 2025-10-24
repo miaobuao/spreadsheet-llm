@@ -5,7 +5,7 @@ Run with:
     python -m pytest tests/test_CellRangeUtils.py
 """
 
-from spreadsheet_llm.CellRangeUtils import col_to_index, combine_cells
+from spreadsheet_llm.cell_range_utils import col_to_index, combine_cells
 
 
 def test_col_to_index_single_letter():

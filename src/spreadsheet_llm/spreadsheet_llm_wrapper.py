@@ -8,8 +8,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
-from spreadsheet_llm.IndexColumnConverter import IndexColumnConverter
-from spreadsheet_llm.SheetCompressor import SheetCompressor
+from spreadsheet_llm.index_column_converter import IndexColumnConverter
+from spreadsheet_llm.sheet_compressor import SheetCompressor
 
 logger = logging.getLogger(__name__)
 
