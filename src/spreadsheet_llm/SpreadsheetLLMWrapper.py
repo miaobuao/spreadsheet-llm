@@ -1,15 +1,35 @@
 import json
 import logging
-import pandas as pd
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
+
 import openpyxl
-from typing import Optional, List
-from pydantic import BaseModel, Field
+import pandas as pd
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
+from pydantic import BaseModel, Field
+
 from spreadsheet_llm.IndexColumnConverter import IndexColumnConverter
 from spreadsheet_llm.SheetCompressor import SheetCompressor
 
 logger = logging.getLogger(__name__)
+
+
+class AnchorsInfo(NamedTuple):
+    """Type definition for anchor information returned by compress_spreadsheet."""
+
+    row_anchors: List[int]
+    column_anchors: List[int]
+    original_shape: Tuple[int, int]
+    compressed_shape: Tuple[int, int]
+
+
+class CompressionResult(NamedTuple):
+    """Type definition for compression result returned by compress_spreadsheet."""
+
+    areas: List[Any]
+    compress_dict: Dict[Any, List[str]]
+    sheet_compressor: SheetCompressor
+    anchors: AnchorsInfo
 
 
 class CellRangeItem(BaseModel):
@@ -59,28 +79,26 @@ Use Chain of Thought reasoning to ensure accurate identification.
 
 class SpreadsheetLLMWrapper:
 
-    def __init__(self, format_aware: bool = False, llm: Optional[BaseChatModel] = None):
-        """
-        Initialize SpreadsheetLLMWrapper.
-
-        Args:
-            format_aware: If True, enables format-aware aggregation in dict output.
-                         Groups cells by both value AND data type (e.g., "100 (Integer)").
-                         If False (default), groups cells only by value.
-            llm: LangChain ChatModel instance (e.g., ChatOpenAI, ChatAnthropic, etc.).
-                 If None, a default ChatOpenAI model will be created.
-        """
-        self.format_aware = format_aware
-        self.llm = llm
-
     def read_spreadsheet(self, file):
 
         wb = openpyxl.load_workbook(file)
         return wb
 
     # Takes a file, compresses it
-    def compress_spreadsheet(self, wb):
-        sheet_compressor = SheetCompressor(format_aware=self.format_aware)
+    def compress_spreadsheet(self, wb, format_aware: bool = False):
+        """
+        Compress spreadsheet using SpreadsheetLLM algorithm.
+
+        Args:
+            wb: Openpyxl workbook instance
+            format_aware: If True, enables format-aware aggregation in dict output.
+                         Groups cells by both value AND data type (e.g., "100 (Integer)").
+                         If False (default), groups cells only by value.
+
+        Returns:
+            CompressionResult containing areas, compress_dict, sheet_compressor, and anchors
+        """
+        sheet_compressor = SheetCompressor(format_aware=format_aware)
         # header=None: treat all rows as data, don't auto-generate column names
         sheet = pd.read_excel(wb, engine="openpyxl", header=None)
         # sheet = sheet.apply(
@@ -91,12 +109,28 @@ class SpreadsheetLLMWrapper:
         sheet = sheet.reset_index(drop=True)
         sheet.columns = list(range(len(sheet.columns)))
 
-        logger.info(f"Original sheet shape: {sheet.shape} (rows x cols)")
+        original_shape = sheet.shape
+        logger.info(f"Original sheet shape: {original_shape} (rows x cols)")
         logger.debug(f"First 5 rows:\n{sheet.head()}")
 
         # Structural-anchor-based Extraction
         sheet = sheet_compressor.anchor(sheet)
-        logger.info(f"After anchor, sheet shape: {sheet.shape} (rows x cols)")
+        compressed_shape = sheet.shape
+        logger.info(f"After anchor, sheet shape: {compressed_shape} (rows x cols)")
+
+        # Collect anchor information
+        row_anchors = list(sheet_compressor.row_candidates)
+        column_anchors = list(sheet_compressor.column_candidates)
+
+        anchors = AnchorsInfo(
+            row_anchors=row_anchors,
+            column_anchors=column_anchors,
+            original_shape=original_shape,
+            compressed_shape=compressed_shape,
+        )
+        logger.info(
+            f"Anchors found: {len(row_anchors)} rows, {len(column_anchors)} columns"
+        )
 
         # Encoding
         markdown = sheet_compressor.encode(
@@ -128,7 +162,12 @@ class SpreadsheetLLMWrapper:
         compress_dict = sheet_compressor.inverted_index(markdown)
         logger.info(f"Compress dict entries: {len(compress_dict)}")
 
-        return areas, compress_dict, sheet_compressor
+        return CompressionResult(
+            areas=areas,
+            compress_dict=compress_dict,
+            sheet_compressor=sheet_compressor,
+            anchors=anchors,
+        )
 
     def serialize_areas(self, areas, sheet_compressor):
         """Serialize areas to string representation.
@@ -277,7 +316,9 @@ class SpreadsheetLLMWrapper:
 
         return ",".join(converted_parts)
 
-    def recognize(self, compress_dict, user_prompt: str | None = None) -> CellRangeList:
+    def recognize(
+        self, compress_dict, model: BaseChatModel, user_prompt: str | None = None
+    ) -> CellRangeList:
         """
         Use LLM to extract structured cell ranges from spreadsheet content with Chain of Thought reasoning.
 
@@ -289,6 +330,7 @@ class SpreadsheetLLMWrapper:
 
         Args:
             compress_dict: Inverted index dictionary from compression
+            model: LangChain ChatModel instance (e.g., ChatOpenAI, ChatAnthropic, etc.)
             user_prompt: Optional user instruction. If None, extracts all meaningful ranges.
 
         Returns:
@@ -296,21 +338,15 @@ class SpreadsheetLLMWrapper:
 
         Example:
             >>> from langchain_openai import ChatOpenAI
-            >>> llm = ChatOpenAI(model="gpt-4o-mini")
-            >>> wrapper = SpreadsheetLLMWrapper(llm=llm)
+            >>> model = ChatOpenAI(model="gpt-4o-mini")
+            >>> wrapper = SpreadsheetLLMWrapper()
             >>> wb = wrapper.read_spreadsheet("data.xlsx")
-            >>> areas, compress_dict, compressor = wrapper.compress_spreadsheet(wb)
-            >>> result = wrapper.recognize(compress_dict)
-            >>> print(result.reasoning)  # See the LLM's thought process
-            >>> for item in result.items:
+            >>> result = wrapper.compress_spreadsheet(wb, format_aware=True)
+            >>> recognition = wrapper.recognize(result.compress_dict, model=model)
+            >>> print(recognition.reasoning)  # See the LLM's thought process
+            >>> for item in recognition.items:
             ...     print(f"{item.title or 'N/A'}: {item.range}")
         """
-        # Check if LLM is initialized
-        if self.llm is None:
-            raise ValueError(
-                "LLM is not initialized. Please provide an LLM instance when creating "
-                "SpreadsheetLLMWrapper, e.g., SpreadsheetLLMWrapper(llm=ChatOpenAI(model='gpt-4o-mini'))"
-            )
 
         # Serialize the compressed data
         dict_str = self.serialize_dict(compress_dict)
@@ -325,14 +361,14 @@ class SpreadsheetLLMWrapper:
         user_message += dict_str
 
         logger.info(
-            f"Sending structured recognition request to LLM: {self.llm.__class__.__name__}"
+            f"Sending structured recognition request to LLM: {model.__class__.__name__}"
         )
         logger.info("Output schema: CellRangeList")
         logger.debug(f"User message length: {len(user_message)} chars")
 
         try:
             # Create a structured output version of the LLM
-            structured_llm = self.llm.with_structured_output(CellRangeList)
+            structured_llm = model.with_structured_output(CellRangeList)
 
             # Call LLM using LangChain (only user message, no system message)
             messages = [
@@ -356,7 +392,11 @@ class SpreadsheetLLMWrapper:
             raise
 
     def recognize_original(
-        self, compress_dict, sheet_compressor, user_prompt: str | None = None
+        self,
+        compress_dict,
+        sheet_compressor,
+        model: BaseChatModel,
+        user_prompt: str | None = None,
     ) -> CellRangeList:
         """
         Use LLM to extract structured cell ranges and convert to original spreadsheet coordinates.
@@ -367,6 +407,7 @@ class SpreadsheetLLMWrapper:
         Args:
             compress_dict: Inverted index dictionary from compression
             sheet_compressor: SheetCompressor instance with row/column mappings
+            model: LangChain ChatModel instance (e.g., ChatOpenAI, ChatAnthropic, etc.)
             user_prompt: Optional user instruction. If None, extracts all meaningful ranges.
 
         Returns:
@@ -374,17 +415,19 @@ class SpreadsheetLLMWrapper:
 
         Example:
             >>> from langchain_openai import ChatOpenAI
-            >>> llm = ChatOpenAI(model="gpt-4o-mini")
-            >>> wrapper = SpreadsheetLLMWrapper(llm=llm)
+            >>> model = ChatOpenAI(model="gpt-4o-mini")
+            >>> wrapper = SpreadsheetLLMWrapper()
             >>> wb = wrapper.read_spreadsheet("data.xlsx")
-            >>> areas, compress_dict, compressor = wrapper.compress_spreadsheet(wb)
-            >>> result = wrapper.recognize_original(compress_dict, compressor)
-            >>> print(result.reasoning)
-            >>> for item in result.items:
+            >>> result = wrapper.compress_spreadsheet(wb, format_aware=True)
+            >>> recognition = wrapper.recognize_original(
+            ...     result.compress_dict, result.sheet_compressor, model=model
+            ... )
+            >>> print(recognition.reasoning)
+            >>> for item in recognition.items:
             ...     print(f"{item.title or 'N/A'}: {item.range}")  # Original coordinates
         """
         # Call recognize to get compressed coordinates
-        compressed_result = self.recognize(compress_dict, user_prompt)
+        compressed_result = self.recognize(compress_dict, model, user_prompt)
 
         # Convert all ranges to original coordinates
         logger.info("Converting compressed coordinates to original coordinates")

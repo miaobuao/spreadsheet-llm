@@ -5,19 +5,20 @@ This package provides tools for compressing spreadsheet data and using LLMs to e
 structured information from spreadsheets.
 """
 
-from spreadsheet_llm.SpreadsheetLLMWrapper import (
-    SpreadsheetLLMWrapper,
-    CellRangeList,
-    CellRangeItem,
-    RECOGNIZE_PROMPT,
-)
-from spreadsheet_llm.SheetCompressor import SheetCompressor
-from spreadsheet_llm.IndexColumnConverter import IndexColumnConverter
 from spreadsheet_llm import CellRangeUtils
+from spreadsheet_llm.IndexColumnConverter import IndexColumnConverter
+from spreadsheet_llm.SheetCompressor import SheetCompressor
+from spreadsheet_llm.SpreadsheetLLMWrapper import (
+    RECOGNIZE_PROMPT,
+    CellRangeItem,
+    CellRangeList,
+    SpreadsheetLLMWrapper,
+)
 
 # Optional: Legacy SpreadsheetLLM class
 try:
     from spreadsheet_llm.SpreadsheetLLM import SpreadsheetLLM
+
     __all_with_legacy__ = ["SpreadsheetLLM"]
 except ImportError:
     __all_with_legacy__ = []

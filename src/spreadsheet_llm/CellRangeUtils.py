@@ -30,7 +30,7 @@ def col_to_index(col_str: str) -> int:
     """
     result = 0
     for char in col_str.upper():
-        result = result * 26 + (ord(char) - ord('A') + 1)
+        result = result * 26 + (ord(char) - ord("A") + 1)
     return result - 1
 
 
@@ -71,8 +71,8 @@ def combine_cells(array: list[str]) -> list[str]:
     for addr in array:
         # Parse address like "A1" -> row=0, col=0
         # Extract column letters and row number
-        col_str = ''.join(c for c in addr if c.isalpha())
-        row_str = ''.join(c for c in addr if c.isdigit())
+        col_str = "".join(c for c in addr if c.isalpha())
+        row_str = "".join(c for c in addr if c.isdigit())
         if not row_str or not col_str:
             continue
         row = int(row_str) - 1  # Convert to 0-based
@@ -117,8 +117,22 @@ def combine_cells(array: list[str]) -> list[str]:
             temp_cols = sorted(set(c[1] for c in temp_coords))
 
             # Check if consecutive
-            rows_consecutive = all(temp_rows[k] + 1 == temp_rows[k + 1] for k in range(len(temp_rows) - 1)) if len(temp_rows) > 1 else True
-            cols_consecutive = all(temp_cols[k] + 1 == temp_cols[k + 1] for k in range(len(temp_cols) - 1)) if len(temp_cols) > 1 else True
+            rows_consecutive = (
+                all(
+                    temp_rows[k] + 1 == temp_rows[k + 1]
+                    for k in range(len(temp_rows) - 1)
+                )
+                if len(temp_rows) > 1
+                else True
+            )
+            cols_consecutive = (
+                all(
+                    temp_cols[k] + 1 == temp_cols[k + 1]
+                    for k in range(len(temp_cols) - 1)
+                )
+                if len(temp_cols) > 1
+                else True
+            )
 
             # Check if forms a complete rectangle
             expected = len(temp_rows) * len(temp_cols)
@@ -168,12 +182,16 @@ if __name__ == "__main__":
     # Test 5: Mixed continuous and non-contiguous
     result = combine_cells(["A1", "A2", "A3", "A5", "A7", "A8"])
     print(f"Test 5 - Mixed: {result}")
-    assert result == ["A1:A3", "A5", "A7:A8"], f"Expected ['A1:A3', 'A5', 'A7:A8'], got '{result}'"
+    assert result == [
+        "A1:A3",
+        "A5",
+        "A7:A8",
+    ], f"Expected ['A1:A3', 'A5', 'A7:A8'], got '{result}'"
 
     # Test 6: Larger rectangular region
     cells = []
     for row in range(1, 4):  # Rows 1-3
-        for col in ['A', 'B', 'C', 'D']:  # Cols A-D
+        for col in ["A", "B", "C", "D"]:  # Cols A-D
             cells.append(f"{col}{row}")
     result = combine_cells(cells)
     print(f"Test 6 - Large rectangle (3x4): {result}")

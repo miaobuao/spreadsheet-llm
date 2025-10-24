@@ -1,5 +1,5 @@
-import string
 import re
+import string
 
 
 class IndexColumnConverter:
@@ -42,7 +42,7 @@ class IndexColumnConverter:
         """
         result = 0
         for char in col_str.upper():
-            result = result * 26 + (ord(char) - ord('A') + 1)
+            result = result * 26 + (ord(char) - ord("A") + 1)
         return result
 
     # Parse cell coordinate into column and row parts
@@ -61,7 +61,7 @@ class IndexColumnConverter:
             'B5' -> ('B', '5')
             'AA100' -> ('AA', '100')
         """
-        match = re.match(r'^([A-Z]+)(\d+)$', cell_str.upper())
+        match = re.match(r"^([A-Z]+)(\d+)$", cell_str.upper())
         if match:
             return match.group(1), match.group(2)
         return None

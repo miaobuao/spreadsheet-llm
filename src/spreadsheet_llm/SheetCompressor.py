@@ -1,13 +1,14 @@
 import datetime
+import logging
+import re
 from typing import Any
+
 import numpy as np
 import pandas as pd
-import re
-import logging
 from pandas.tseries.api import guess_datetime_format  # type: ignore
 
-from spreadsheet_llm.IndexColumnConverter import IndexColumnConverter
 from spreadsheet_llm.CellRangeUtils import combine_cells
+from spreadsheet_llm.IndexColumnConverter import IndexColumnConverter
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
@@ -42,7 +43,9 @@ class SheetCompressor:
         self.row_lengths = {}
         self.column_lengths = {}
         self.row_mapping = {}  # Maps compressed row index -> original row index
-        self.column_mapping = {}  # Maps compressed column index -> original column index
+        self.column_mapping = (
+            {}
+        )  # Maps compressed column index -> original column index
 
     # Obtain border, fill, bold info about cell; incomplete
     def get_format(self, cell):
@@ -237,8 +240,12 @@ class SheetCompressor:
         sheet = sheet.iloc[self.row_candidates, self.column_candidates]
 
         # Create mapping: compressed index -> original index
-        self.row_mapping = {i: original_row_indices[i] for i in range(len(original_row_indices))}
-        self.column_mapping = {i: original_col_indices[i] for i in range(len(original_col_indices))}
+        self.row_mapping = {
+            i: original_row_indices[i] for i in range(len(original_row_indices))
+        }
+        self.column_mapping = {
+            i: original_col_indices[i] for i in range(len(original_col_indices))
+        }
 
         logger.debug(f"Row mapping (compressed->original): {self.row_mapping}")
         logger.debug(f"Column mapping (compressed->original): {self.column_mapping}")
@@ -276,7 +283,9 @@ class SheetCompressor:
         use_category = self.format_aware and "Category" in markdown.columns
 
         if use_category:
-            logger.info("Using format-aware aggregation (Other uses values, data types use categories)")
+            logger.info(
+                "Using format-aware aggregation (Other uses values, data types use categories)"
+            )
         else:
             logger.info("Using simple aggregation (grouping by value only)")
 
@@ -327,10 +336,7 @@ class SheetCompressor:
         Format: {"rows": {compressed_idx: original_idx}, "columns": {compressed_idx: original_idx}}
         """
         converter = IndexColumnConverter()
-        mapping = {
-            "rows": {},
-            "columns": {}
-        }
+        mapping = {"rows": {}, "columns": {}}
 
         # Convert row mapping to cell notation
         for compressed_idx, original_idx in self.row_mapping.items():
@@ -342,7 +348,9 @@ class SheetCompressor:
             original_col = converter.parse_colindex(original_idx + 1)
             mapping["columns"][compressed_col] = original_col
 
-        logger.info(f"Coordinate mapping: {len(mapping['rows'])} rows, {len(mapping['columns'])} columns")
+        logger.info(
+            f"Coordinate mapping: {len(mapping['rows'])} rows, {len(mapping['columns'])} columns"
+        )
         return mapping
 
     # Key-Value to Value-Key for categories
