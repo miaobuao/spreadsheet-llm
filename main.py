@@ -238,16 +238,21 @@ Environment Variables:
             areas_file = str(base_name) + suffix + "_areas.txt"
             dict_file = str(base_name) + suffix + "_dict.txt"
             mapping_file = str(base_name) + suffix + "_mapping.json"
+            compressed_sheet_file = str(base_name) + suffix + "_compressed.xlsx"
 
             # Write output files
             wrapper.write_areas(areas_file, result.areas, result.sheet_compressor)
             wrapper.write_dict(dict_file, result.compress_dict)
             wrapper.write_mapping(mapping_file, result.sheet_compressor)
+            result.compressed_sheet.to_excel(
+                compressed_sheet_file, index=False, header=False
+            )
 
             logger.info("Output files:")
             logger.info(f"  - {areas_file}")
             logger.info(f"  - {dict_file}")
             logger.info(f"  - {mapping_file}")
+            logger.info(f"  - {compressed_sheet_file}")
 
             # Calculate compression ratio
             original_size += os.path.getsize(file)

@@ -119,6 +119,36 @@ class SheetCompressor:
                 current_type = temp
                 self.column_candidates = np.append(self.column_candidates, i)
 
+    # Checks for non-null cell count changes across rows
+    def get_non_null_count_row(self, sheet):
+        """Detect rows where the number of non-null cells changes."""
+        row_candidates = []
+        prev_count = None
+
+        for i, row in sheet.iterrows():
+            count = row.notna().sum()  # Count non-NaN cells
+            if prev_count is not None and count != prev_count:
+                row_candidates.append(i)
+                logger.debug(f"Row {i}: non-null count changed from {prev_count} to {count}")
+            prev_count = count
+
+        return np.array(row_candidates)
+
+    # Checks for non-null cell count changes across columns
+    def get_non_null_count_column(self, sheet):
+        """Detect columns where the number of non-null cells changes."""
+        column_candidates = []
+        prev_count = None
+
+        for col_idx in sheet.columns:
+            count = sheet[col_idx].notna().sum()
+            if prev_count is not None and count != prev_count:
+                column_candidates.append(col_idx)
+                logger.debug(f"Column {col_idx}: non-null count changed from {prev_count} to {count}")
+            prev_count = count
+
+        return np.array(column_candidates)
+
     # Checks for length of text across row/column, looks for outliers, marks as candidates
     def get_length_row(self, sheet):
         for i, j in sheet.iterrows():
@@ -180,17 +210,26 @@ class SheetCompressor:
         logger.debug(f"Row length outliers: {sorted(self.row_lengths.keys())}")
         logger.debug(f"Column length outliers: {sorted(self.column_lengths.keys())}")
 
-        # Keep candidates found in EITHER dtype OR length method (use union instead of intersect)
+        # NEW: Get non-null count change candidates
+        row_non_null_candidates = self.get_non_null_count_row(sheet)
+        column_non_null_candidates = self.get_non_null_count_column(sheet)
+
+        logger.debug(f"Row non-null count changes: {sorted(row_non_null_candidates.tolist()) if len(row_non_null_candidates) > 0 else []}")
+        logger.debug(f"Column non-null count changes: {sorted(column_non_null_candidates.tolist()) if len(column_non_null_candidates) > 0 else []}")
+
+        # Keep candidates found in ANY method (dtype, length, or non-null count)
         # This is more permissive and retains more table structure information
         self.row_candidates = np.union1d(
-            list(self.row_lengths.keys()), self.row_candidates
+            np.union1d(list(self.row_lengths.keys()), self.row_candidates),
+            row_non_null_candidates
         )
         self.column_candidates = np.union1d(
-            list(self.column_lengths.keys()), self.column_candidates
+            np.union1d(list(self.column_lengths.keys()), self.column_candidates),
+            column_non_null_candidates
         )
 
-        logger.info(f"Row candidates after union: {sorted(self.row_candidates)}")
-        logger.info(f"Column candidates after union: {sorted(self.column_candidates)}")
+        logger.info(f"Row candidates after union (dtype + length + non-null): {sorted(self.row_candidates)}")
+        logger.info(f"Column candidates after union (dtype + length + non-null): {sorted(self.column_candidates)}")
 
         # Beginning/End are candidates
         self.row_candidates = np.append(
@@ -333,23 +372,28 @@ class SheetCompressor:
     def get_coordinate_mapping(self):
         """
         Returns the mapping from compressed coordinates to original coordinates.
-        Format: {"rows": {compressed_idx: original_idx}, "columns": {compressed_idx: original_idx}}
+        Format: {"A1": "A1", "E6": "Q31", ...}
+        Each compressed cell coordinate maps directly to its original cell coordinate.
         """
         converter = IndexColumnConverter()
-        mapping = {"rows": {}, "columns": {}}
+        mapping = {}
 
-        # Convert row mapping to cell notation
-        for compressed_idx, original_idx in self.row_mapping.items():
-            mapping["rows"][str(compressed_idx + 1)] = str(original_idx + 1)
+        # Generate mapping for all compressed cells
+        for compressed_row_idx, original_row_idx in self.row_mapping.items():
+            for compressed_col_idx, original_col_idx in self.column_mapping.items():
+                # Convert indices to cell notation (e.g., "A1", "B5")
+                compressed_col = converter.parse_colindex(compressed_col_idx + 1)
+                compressed_row = str(compressed_row_idx + 1)
+                compressed_cell = f"{compressed_col}{compressed_row}"
 
-        # Convert column mapping to cell notation
-        for compressed_idx, original_idx in self.column_mapping.items():
-            compressed_col = converter.parse_colindex(compressed_idx + 1)
-            original_col = converter.parse_colindex(original_idx + 1)
-            mapping["columns"][compressed_col] = original_col
+                original_col = converter.parse_colindex(original_col_idx + 1)
+                original_row = str(original_row_idx + 1)
+                original_cell = f"{original_col}{original_row}"
+
+                mapping[compressed_cell] = original_cell
 
         logger.info(
-            f"Coordinate mapping: {len(mapping['rows'])} rows, {len(mapping['columns'])} columns"
+            f"Coordinate mapping: {len(mapping)} cells ({len(self.row_mapping)} rows × {len(self.column_mapping)} columns)"
         )
         return mapping
 

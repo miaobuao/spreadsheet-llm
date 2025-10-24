@@ -30,6 +30,7 @@ class CompressionResult(NamedTuple):
     compress_dict: Dict[Any, List[str]]
     sheet_compressor: SheetCompressor
     anchors: AnchorsInfo
+    compressed_sheet: pd.DataFrame
 
 
 class CellRangeItem(BaseModel):
@@ -101,9 +102,6 @@ class SpreadsheetLLMWrapper:
         sheet_compressor = SheetCompressor(format_aware=format_aware)
         # header=None: treat all rows as data, don't auto-generate column names
         sheet = pd.read_excel(wb, engine="openpyxl", header=None)
-        # sheet = sheet.apply(
-        #     lambda x: x.str.replace("\n", "<br>") if x.dtype == "object" else x
-        # )
 
         # Reset index and column names to integers
         sheet = sheet.reset_index(drop=True)
@@ -131,6 +129,18 @@ class SpreadsheetLLMWrapper:
         logger.info(
             f"Anchors found: {len(row_anchors)} rows, {len(column_anchors)} columns"
         )
+
+        # Debug: Print all anchor coordinates
+        converter = IndexColumnConverter()
+        logger.info("=" * 60)
+        logger.info("ALL ANCHOR COORDINATES (for debugging):")
+        logger.info("=" * 60)
+        logger.info(f"Row anchors (0-indexed): {sorted(row_anchors)}")
+        logger.info(f"Row anchors (1-indexed): {[r+1 for r in sorted(row_anchors)]}")
+        logger.info(f"Column anchors (0-indexed): {sorted(column_anchors)}")
+        col_letters = [converter.parse_colindex(c + 1) for c in sorted(column_anchors)]
+        logger.info(f"Column anchors (letters): {col_letters}")
+        logger.info("=" * 60)
 
         # Encoding
         markdown = sheet_compressor.encode(
@@ -167,6 +177,7 @@ class SpreadsheetLLMWrapper:
             compress_dict=compress_dict,
             sheet_compressor=sheet_compressor,
             anchors=anchors,
+            compressed_sheet=sheet,
         )
 
     def serialize_areas(self, areas, sheet_compressor):
@@ -239,10 +250,10 @@ class SpreadsheetLLMWrapper:
             sheet_compressor: SheetCompressor instance with row/column mappings
 
         Returns:
-            JSON string representation of coordinate mapping
+            JSON string representation of coordinate mapping (sorted by key)
         """
         mapping = sheet_compressor.get_coordinate_mapping()
-        return json.dumps(mapping, indent=2, ensure_ascii=False)
+        return json.dumps(mapping, indent=2, ensure_ascii=False, sort_keys=True)
 
     def write_mapping(self, file, sheet_compressor):
         """Write coordinate mapping from compressed to original coordinates as JSON"""
@@ -256,12 +267,14 @@ class SpreadsheetLLMWrapper:
         """
         Convert compressed coordinate(s) to original coordinate(s).
 
+        Uses the coordinate mapping table from get_coordinate_mapping() for direct lookup.
+
         Args:
             compressed_coord: Compressed coordinate string, can be:
                 - Single cell: "A1", "B5"
                 - Range: "A1:B5", "C3:D10"
                 - Multiple ranges: "A1,B2:B5,C3"
-            sheet_compressor: SheetCompressor instance with row/column mappings
+            sheet_compressor: SheetCompressor instance with coordinate mapping
 
         Returns:
             Original coordinate string in the same format as input
@@ -272,35 +285,19 @@ class SpreadsheetLLMWrapper:
             "A1:B3" -> "A1:C5" (range conversion)
             "A1,B2:B5" -> "A1,C3:C8" (multiple ranges)
         """
-        converter = IndexColumnConverter()
+        # Get the complete coordinate mapping table
+        mapping = sheet_compressor.get_coordinate_mapping()
 
         def convert_single_cell(cell: str) -> str:
-            """Convert a single cell coordinate"""
-            # Parse cell coordinate (e.g., "A1" -> col=0, row=0)
-            match = converter.parse_cell(cell)
-            if not match:
-                logger.warning(f"Invalid cell format: {cell}")
+            """Convert a single cell coordinate using the mapping table"""
+            cell = cell.strip()
+
+            # Direct lookup in mapping table
+            if cell in mapping:
+                return mapping[cell]
+            else:
+                logger.warning(f"Cell {cell} not found in mapping table")
                 return cell
-
-            col_str, row_str = match
-            compressed_col = (
-                converter.parse_cellindex(col_str) - 1
-            )  # Convert to 0-based
-            compressed_row = int(row_str) - 1  # Convert to 0-based
-
-            # Map to original indices
-            original_row = sheet_compressor.row_mapping.get(
-                compressed_row, compressed_row
-            )
-            original_col = sheet_compressor.column_mapping.get(
-                compressed_col, compressed_col
-            )
-
-            # Convert back to cell notation
-            original_col_str = converter.parse_colindex(original_col + 1)
-            original_row_str = str(original_row + 1)
-
-            return f"{original_col_str}{original_row_str}"
 
         def convert_range(range_str: str) -> str:
             """Convert a cell range (e.g., 'A1:B5')"""
