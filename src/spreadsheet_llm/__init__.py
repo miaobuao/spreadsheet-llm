@@ -15,15 +15,7 @@ from spreadsheet_llm.SpreadsheetLLMWrapper import (
     SpreadsheetLLMWrapper,
 )
 
-# Optional: Legacy SpreadsheetLLM class
-try:
-    from spreadsheet_llm.SpreadsheetLLM import SpreadsheetLLM
-
-    __all_with_legacy__ = ["SpreadsheetLLM"]
-except ImportError:
-    __all_with_legacy__ = []
-
-__version__ = "0.1.0"
+__version__ = "0.0.1"
 
 __all__ = [
     "SpreadsheetLLMWrapper",
@@ -33,4 +25,4 @@ __all__ = [
     "SheetCompressor",
     "IndexColumnConverter",
     "CellRangeUtils",
-] + __all_with_legacy__
+]

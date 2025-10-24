@@ -96,10 +96,6 @@ def combine_cells(array: list[str]) -> list[str]:
             continue
 
         # Try to find the largest rectangle starting from this cell
-        # Start with single cell
-        min_row, max_row = row, row
-        min_col, max_col = col, col
-
         # Try to expand the rectangle
         best_rect = None
         best_size = 1
@@ -202,6 +198,6 @@ if __name__ == "__main__":
     assert col_to_index("Z") == 25, "Z should be 25"
     assert col_to_index("AA") == 26, "AA should be 26"
     assert col_to_index("AB") == 27, "AB should be 27"
-    print(f"Test 7 - Column conversion: PASSED")
+    print("Test 7 - Column conversion: PASSED")
 
     print("\n✅ All tests passed!")
