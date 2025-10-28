@@ -4,22 +4,29 @@ Comprehensive test suite for cell_range_utils module.
 Tests cover:
 - col_to_index: Convert Excel column letters to 0-based index
 - index_to_col: Convert 0-based index to Excel column letters
+- parse_excel_range: Parse Excel range strings
+- box_to_range: Convert box coordinates to Excel ranges
 - combine_cells: Combine cell addresses into compact ranges
   - Basic functionality
   - Edge cases
   - Precision requirements
   - Performance benchmarks
   - Complex real-world scenarios
+
+Run with: pytest tests/test_cell_range_utils.py -v
 """
 
-import sys
 import time
-from pathlib import Path
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+import pytest
 
-from spreadsheet_llm.cell_range_utils import col_to_index, index_to_col, combine_cells
+from spreadsheet_llm.cell_range_utils import (
+    box_to_range,
+    col_to_index,
+    combine_cells,
+    index_to_col,
+    parse_excel_range,
+)
 
 
 class TestColToIndex:
@@ -96,6 +103,115 @@ class TestIndexToCol:
         assert index_to_col(0) == "A", "First column should be A"
         assert index_to_col(25) == "Z", "Last single-letter column should be Z"
         assert index_to_col(26) == "AA", "First double-letter column should be AA"
+
+
+class TestParseExcelRange:
+    """Test parse_excel_range function: Excel range string → components."""
+
+    def test_simple_range(self):
+        """Test simple ranges like A1:D10."""
+        start_col, start_row, end_col, end_row = parse_excel_range("A1:D10")
+        assert start_col == "A", "Start column should be A"
+        assert start_row == 1, "Start row should be 1"
+        assert end_col == "D", "End column should be D"
+        assert end_row == 10, "End row should be 10"
+
+    def test_double_letter_columns(self):
+        """Test ranges with double-letter columns."""
+        start_col, start_row, end_col, end_row = parse_excel_range("AA1:AB50")
+        assert start_col == "AA", "Start column should be AA"
+        assert start_row == 1, "Start row should be 1"
+        assert end_col == "AB", "End column should be AB"
+        assert end_row == 50, "End row should be 50"
+
+    def test_large_range(self):
+        """Test large ranges."""
+        start_col, start_row, end_col, end_row = parse_excel_range("B5:Z100")
+        assert start_col == "B", "Start column should be B"
+        assert start_row == 5, "Start row should be 5"
+        assert end_col == "Z", "End column should be Z"
+        assert end_row == 100, "End row should be 100"
+
+    def test_single_cell_range(self):
+        """Test single-cell range (same start and end)."""
+        start_col, start_row, end_col, end_row = parse_excel_range("C3:C3")
+        assert start_col == "C", "Start column should be C"
+        assert start_row == 3, "Start row should be 3"
+        assert end_col == "C", "End column should be C"
+        assert end_row == 3, "End row should be 3"
+
+    def test_invalid_format_no_colon(self):
+        """Test that invalid format (no colon) raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid range format"):
+            parse_excel_range("A1")
+
+    def test_invalid_format_bad_start(self):
+        """Test that invalid start cell raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid start cell"):
+            parse_excel_range("1:D10")
+
+    def test_invalid_format_bad_end(self):
+        """Test that invalid end cell raises ValueError."""
+        with pytest.raises(ValueError, match="Invalid end cell"):
+            parse_excel_range("A1:10")
+
+
+class TestBoxToRange:
+    """Test box_to_range function: 0-indexed box → Excel range string."""
+
+    def test_simple_box(self):
+        """Test simple box conversion."""
+        result = box_to_range((0, 0, 9, 3))
+        assert result == "A1:D10", f"Expected 'A1:D10', got '{result}'"
+
+    def test_offset_box(self):
+        """Test box that doesn't start at (0,0)."""
+        result = box_to_range((4, 1, 99, 25))
+        assert result == "B5:Z100", f"Expected 'B5:Z100', got '{result}'"
+
+    def test_double_letter_columns(self):
+        """Test box with double-letter columns."""
+        result = box_to_range((0, 26, 49, 27))
+        assert result == "AA1:AB50", f"Expected 'AA1:AB50', got '{result}'"
+
+    def test_single_cell_box(self):
+        """Test single-cell box."""
+        result = box_to_range((5, 5, 5, 5))
+        assert result == "F6:F6", f"Expected 'F6:F6', got '{result}'"
+
+    def test_large_box(self):
+        """Test large box with high row numbers."""
+        result = box_to_range((999, 0, 1999, 25))
+        assert result == "A1000:Z2000", f"Expected 'A1000:Z2000', got '{result}'"
+
+    def test_round_trip_conversion(self):
+        """Test that parse_excel_range and box_to_range are inverse operations."""
+        test_cases = [
+            "A1:D10",
+            "B5:Z100",
+            "AA1:AB50",
+            "C3:C3",
+            "A1000:Z2000",
+        ]
+
+        for original_range in test_cases:
+            # Parse to components
+            start_col, start_row, end_col, end_row = parse_excel_range(original_range)
+
+            # Convert to box (0-indexed)
+            box = (
+                start_row - 1,
+                col_to_index(start_col),
+                end_row - 1,
+                col_to_index(end_col),
+            )
+
+            # Convert back to range
+            reconstructed_range = box_to_range(box)
+
+            assert (
+                reconstructed_range == original_range
+            ), f"Round trip failed: {original_range} → {box} → {reconstructed_range}"
 
 
 class TestBasicFunctionality:
@@ -340,65 +456,3 @@ class TestRealWorldScenarios:
 
         result = combine_cells(cells)
         assert len(result) == 3, f"Expected 3 ranges, got {len(result)}: {result}"
-
-
-def run_all_tests():
-    """Run all test classes."""
-    test_classes = [
-        TestColToIndex,
-        TestIndexToCol,
-        TestBasicFunctionality,
-        TestEdgeCases,
-        TestPrecision,
-        TestPerformance,
-        TestRealWorldScenarios,
-    ]
-
-    total_tests = 0
-    passed_tests = 0
-    failed_tests = []
-
-    for test_class in test_classes:
-        print(f"\n{'='*70}")
-        print(f"Running {test_class.__name__}")
-        print(f"{'='*70}")
-
-        test_instance = test_class()
-        test_methods = [m for m in dir(test_instance) if m.startswith("test_")]
-
-        for method_name in test_methods:
-            total_tests += 1
-            try:
-                method = getattr(test_instance, method_name)
-                method()
-                print(f"✓ {method_name}")
-                passed_tests += 1
-            except AssertionError as e:
-                print(f"✗ {method_name}: {e}")
-                failed_tests.append((test_class.__name__, method_name, str(e)))
-            except Exception as e:
-                print(f"✗ {method_name}: EXCEPTION: {e}")
-                failed_tests.append((test_class.__name__, method_name, f"Exception: {e}"))
-
-    # Summary
-    print(f"\n{'='*70}")
-    print("TEST SUMMARY")
-    print(f"{'='*70}")
-    print(f"Total tests: {total_tests}")
-    print(f"Passed: {passed_tests}")
-    print(f"Failed: {len(failed_tests)}")
-
-    if failed_tests:
-        print("\nFailed tests:")
-        for class_name, method_name, error in failed_tests:
-            print(f"  - {class_name}.{method_name}")
-            print(f"    {error}")
-        return False
-    else:
-        print("\n🎉 All tests passed!")
-        return True
-
-
-if __name__ == "__main__":
-    success = run_all_tests()
-    sys.exit(0 if success else 1)

@@ -221,3 +221,89 @@ def combine_cells(array: list[str]) -> list[str]:
             used.add(i)
 
     return result
+
+
+def parse_excel_range(range_str: str) -> tuple[str, int, str, int]:
+    """
+    Parse Excel range string into its components.
+
+    Converts a range like "A1:D10" into separate start and end components.
+
+    Args:
+        range_str: Excel range string (e.g., "A1:D10", "B5:Z100")
+
+    Returns:
+        Tuple of (start_col, start_row, end_col, end_row)
+        - start_col: Starting column letter(s) (e.g., "A", "AA")
+        - start_row: Starting row number (1-indexed)
+        - end_col: Ending column letter(s)
+        - end_row: Ending row number (1-indexed)
+
+    Examples:
+        >>> parse_excel_range("A1:D10")
+        ('A', 1, 'D', 10)
+        >>> parse_excel_range("B5:Z100")
+        ('B', 5, 'Z', 100)
+        >>> parse_excel_range("AA1:AB50")
+        ('AA', 1, 'AB', 50)
+
+    Raises:
+        ValueError: If range_str is not in valid format
+    """
+    if ":" not in range_str:
+        raise ValueError(f"Invalid range format: '{range_str}'. Expected format like 'A1:D10'")
+
+    start, end = range_str.split(":")
+
+    # Parse start cell
+    start_col = "".join(c for c in start if c.isalpha())
+    start_row_str = "".join(c for c in start if c.isdigit())
+
+    # Parse end cell
+    end_col = "".join(c for c in end if c.isalpha())
+    end_row_str = "".join(c for c in end if c.isdigit())
+
+    # Validate
+    if not start_col or not start_row_str:
+        raise ValueError(f"Invalid start cell: '{start}'")
+    if not end_col or not end_row_str:
+        raise ValueError(f"Invalid end cell: '{end}'")
+
+    start_row = int(start_row_str)
+    end_row = int(end_row_str)
+
+    return start_col, start_row, end_col, end_row
+
+
+def box_to_range(box: tuple[int, int, int, int]) -> str:
+    """
+    Convert 0-indexed box coordinates to Excel range string.
+
+    Args:
+        box: Tuple of (row_start, col_start, row_end, col_end)
+             All coordinates are 0-indexed
+
+    Returns:
+        Excel range string (e.g., "A1:D10")
+
+    Examples:
+        >>> box_to_range((0, 0, 9, 3))
+        'A1:D10'
+        >>> box_to_range((4, 1, 99, 25))
+        'B5:Z100'
+        >>> box_to_range((0, 26, 49, 27))
+        'AA1:AB50'
+        >>> box_to_range((5, 5, 5, 5))
+        'F6:F6'
+
+    Note:
+        This is the inverse of parse_excel_range when combined with col_to_index.
+    """
+    row_start, col_start, row_end, col_end = box
+
+    start_col = index_to_col(col_start)
+    end_col = index_to_col(col_end)
+    start_row = row_start + 1  # Convert to 1-indexed
+    end_row = row_end + 1  # Convert to 1-indexed
+
+    return f"{start_col}{start_row}:{end_col}{end_row}"
