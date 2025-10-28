@@ -1,6 +1,8 @@
 VFUSE
-output
+/output
 *.xls
 *.pdf
 __pycache__
 .DS_Store
+/logs
+/cache/*

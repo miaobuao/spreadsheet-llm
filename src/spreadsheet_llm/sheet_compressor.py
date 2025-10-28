@@ -38,10 +38,14 @@ class SheetCompressor:
                          If False (default), groups cells only by value.
         """
         self.format_aware = format_aware
-        self.row_candidates = []
-        self.column_candidates = []
+        # These will be populated by the anchor() method
+        self.row_candidates = np.array([])
+        self.column_candidates = np.array([])
         self.row_lengths = {}
         self.column_lengths = {}
+        self.row_non_null_candidates = np.array([])
+        self.column_non_null_candidates = np.array([])
+        # Mapping tables populated after compression
         self.row_mapping = {}  # Maps compressed row index -> original row index
         self.column_mapping = (
             {}
@@ -106,6 +110,7 @@ class SheetCompressor:
 
     # Checks for identical dtypes across row/column
     def get_dtype_row(self, sheet):
+        """Detect rows where data type pattern changes and update row_candidates."""
         current_type = []
         for i, j in sheet.iterrows():
             if current_type != (temp := j.apply(type).to_list()):
@@ -113,6 +118,7 @@ class SheetCompressor:
                 self.row_candidates = np.append(self.row_candidates, i)
 
     def get_dtype_column(self, sheet):
+        """Detect columns where data type pattern changes and update column_candidates."""
         current_type = []
         for i, j in enumerate(sheet.columns):
             if current_type != (temp := sheet[j].apply(type).to_list()):
@@ -121,36 +127,39 @@ class SheetCompressor:
 
     # Checks for non-null cell count changes across rows
     def get_non_null_count_row(self, sheet):
-        """Detect rows where the number of non-null cells changes."""
-        row_candidates = []
+        """Detect rows where the number of non-null cells changes and update row_non_null_candidates."""
         prev_count = None
 
         for i, row in sheet.iterrows():
             count = row.notna().sum()  # Count non-NaN cells
             if prev_count is not None and count != prev_count:
-                row_candidates.append(i)
-                logger.debug(f"Row {i}: non-null count changed from {prev_count} to {count}")
+                self.row_non_null_candidates = np.append(
+                    self.row_non_null_candidates, i
+                )
+                logger.debug(
+                    f"Row {i}: non-null count changed from {prev_count} to {count}"
+                )
             prev_count = count
-
-        return np.array(row_candidates)
 
     # Checks for non-null cell count changes across columns
     def get_non_null_count_column(self, sheet):
-        """Detect columns where the number of non-null cells changes."""
-        column_candidates = []
+        """Detect columns where the number of non-null cells changes and update column_non_null_candidates."""
         prev_count = None
 
         for col_idx in sheet.columns:
             count = sheet[col_idx].notna().sum()
             if prev_count is not None and count != prev_count:
-                column_candidates.append(col_idx)
-                logger.debug(f"Column {col_idx}: non-null count changed from {prev_count} to {count}")
+                self.column_non_null_candidates = np.append(
+                    self.column_non_null_candidates, col_idx
+                )
+                logger.debug(
+                    f"Column {col_idx}: non-null count changed from {prev_count} to {count}"
+                )
             prev_count = count
-
-        return np.array(column_candidates)
 
     # Checks for length of text across row/column, looks for outliers, marks as candidates
     def get_length_row(self, sheet):
+        """Detect rows with outlier text lengths (mean ± 2*std) and update row_lengths."""
         for i, j in sheet.iterrows():
             self.row_lengths[i] = sum(
                 j.apply(
@@ -159,19 +168,23 @@ class SheetCompressor:
                         if isinstance(x, float)
                         or isinstance(x, int)
                         or isinstance(x, datetime.datetime)
+                        or isinstance(x, datetime.time)
                         else len(x)
                     )
                 )
             )
         mean = np.mean(list(self.row_lengths.values()))
         std = np.std(list(self.row_lengths.values()))
-        min = np.max(mean - 2 * std, 0)
-        max = mean + 2 * std
+        min_threshold = max(mean - 2 * std, 0)
+        max_threshold = mean + 2 * std
         self.row_lengths = dict(
-            (k, v) for k, v in self.row_lengths.items() if v < min or v > max
+            (k, v)
+            for k, v in self.row_lengths.items()
+            if v < min_threshold or v > max_threshold
         )
 
     def get_length_column(self, sheet):
+        """Detect columns with outlier text lengths (mean ± 2*std) and update column_lengths."""
         for i, j in enumerate(sheet.columns):
             self.column_lengths[i] = sum(
                 sheet[j].apply(
@@ -180,16 +193,19 @@ class SheetCompressor:
                         if isinstance(x, float)
                         or isinstance(x, int)
                         or isinstance(x, datetime.datetime)
+                        or isinstance(x, datetime.time)
                         else len(x)
                     )
                 )
             )
         mean = np.mean(list(self.column_lengths.values()))
         std = np.std(list(self.column_lengths.values()))
-        min = np.max(mean - 2 * std, 0)
-        max = mean + 2 * std
+        min_threshold = max(mean - 2 * std, 0)
+        max_threshold = mean + 2 * std
         self.column_lengths = dict(
-            (k, v) for k, v in self.column_lengths.items() if v < min or v > max
+            (k, v)
+            for k, v in self.column_lengths.items()
+            if v < min_threshold or v > max_threshold
         )
 
     def anchor(self, sheet):
@@ -198,38 +214,46 @@ class SheetCompressor:
         def surrounding_k(num, k):
             return list(range(num - k, num + k + 1))
 
+        # Run all detection methods (each method updates instance attributes)
         self.get_dtype_row(sheet)
         self.get_dtype_column(sheet)
         self.get_length_row(sheet)
         self.get_length_column(sheet)
+        self.get_non_null_count_row(sheet)
+        self.get_non_null_count_column(sheet)
 
-        logger.debug(f"Initial row candidates (dtype): {sorted(self.row_candidates)}")
         logger.debug(
-            f"Initial column candidates (dtype): {sorted(self.column_candidates)}"
+            f"Initial row candidates (dtype): {sorted(self.row_candidates.tolist()) if len(self.row_candidates) > 0 else []}"
+        )
+        logger.debug(
+            f"Initial column candidates (dtype): {sorted(self.column_candidates.tolist()) if len(self.column_candidates) > 0 else []}"
         )
         logger.debug(f"Row length outliers: {sorted(self.row_lengths.keys())}")
         logger.debug(f"Column length outliers: {sorted(self.column_lengths.keys())}")
-
-        # NEW: Get non-null count change candidates
-        row_non_null_candidates = self.get_non_null_count_row(sheet)
-        column_non_null_candidates = self.get_non_null_count_column(sheet)
-
-        logger.debug(f"Row non-null count changes: {sorted(row_non_null_candidates.tolist()) if len(row_non_null_candidates) > 0 else []}")
-        logger.debug(f"Column non-null count changes: {sorted(column_non_null_candidates.tolist()) if len(column_non_null_candidates) > 0 else []}")
+        logger.debug(
+            f"Row non-null count changes: {sorted(self.row_non_null_candidates.tolist()) if len(self.row_non_null_candidates) > 0 else []}"
+        )
+        logger.debug(
+            f"Column non-null count changes: {sorted(self.column_non_null_candidates.tolist()) if len(self.column_non_null_candidates) > 0 else []}"
+        )
 
         # Keep candidates found in ANY method (dtype, length, or non-null count)
         # This is more permissive and retains more table structure information
         self.row_candidates = np.union1d(
             np.union1d(list(self.row_lengths.keys()), self.row_candidates),
-            row_non_null_candidates
+            self.row_non_null_candidates,
         )
         self.column_candidates = np.union1d(
             np.union1d(list(self.column_lengths.keys()), self.column_candidates),
-            column_non_null_candidates
+            self.column_non_null_candidates,
         )
 
-        logger.info(f"Row candidates after union (dtype + length + non-null): {sorted(self.row_candidates)}")
-        logger.info(f"Column candidates after union (dtype + length + non-null): {sorted(self.column_candidates)}")
+        logger.info(
+            f"Row candidates after union (dtype + length + non-null): {sorted(self.row_candidates)}"
+        )
+        logger.info(
+            f"Column candidates after union (dtype + length + non-null): {sorted(self.column_candidates)}"
+        )
 
         # Beginning/End are candidates
         self.row_candidates = np.append(
@@ -268,8 +292,18 @@ class SheetCompressor:
         logger.info(
             f"Final column candidates (total {len(self.column_candidates)}): {sorted(self.column_candidates.tolist())}"
         )
+        # Calculate retention rates with division by zero protection
+        row_retention_pct = (
+            len(self.row_candidates) / len(sheet) * 100 if len(sheet) > 0 else 0
+        )
+        col_retention_pct = (
+            len(self.column_candidates) / len(sheet.columns) * 100
+            if len(sheet.columns) > 0
+            else 0
+        )
         logger.warning(
-            f"Retention rate: {len(self.row_candidates)}/{len(sheet)} rows ({len(self.row_candidates)/len(sheet)*100:.1f}%), {len(self.column_candidates)}/{len(sheet.columns)} cols ({len(self.column_candidates)/len(sheet.columns)*100:.1f}%)"
+            f"Retention rate: {len(self.row_candidates)}/{len(sheet)} rows ({row_retention_pct:.1f}%), "
+            f"{len(self.column_candidates)}/{len(sheet.columns)} cols ({col_retention_pct:.1f}%)"
         )
 
         # Save the original row and column indices before remapping
@@ -357,7 +391,15 @@ class SheetCompressor:
 
         # Combine cells and format output
         res: dict[Any, list[str]] = {}
-        for k, v in dictionary.items():
+        total_keys = len(dictionary)
+        for idx, (k, v) in enumerate(dictionary.items(), 1):
+            # Log progress for keys with many cells or periodically
+            cell_count = len(v)
+            if cell_count > 100:
+                logger.info(f"Processing key {idx}/{total_keys}: '{k}' with {cell_count} cells...")
+            elif idx % 50 == 0:
+                logger.debug(f"Progress: {idx}/{total_keys} keys processed")
+
             combined = combine_cells(v)  # Returns list[str]
             res[k] = combined
 
@@ -414,6 +456,12 @@ class SheetCompressor:
             return "Integer"
         if isinstance(string, datetime.datetime):
             return "yyyy/mm/dd"
+        if isinstance(string, datetime.time):
+            return "Time"
+
+        # Convert to string for regex matching
+        string = str(string)
+
         if re.match(r"^-?\d+$", string):
             return "Integer"
         if re.match(r"^-?\d+\.\d+$", string):
@@ -446,30 +494,48 @@ class SheetCompressor:
             else:
                 return dictionary[sheet]
 
-        # DFS for checking bounds
-        def dfs(r, c, val_type):
-            match = replace_nan(sheet.iloc[r, c])
-            if visited[r][c] or val_type != match:
-                return [r, c, r - 1, c - 1]
-            visited[r][c] = True
-            bounds = [r, c, r, c]
-            for i in [[r - 1, c], [r, c - 1], [r + 1, c], [r, c + 1]]:
+        # Iterative DFS using stack (avoids RecursionError for large areas)
+        def dfs_iterative(start_r, start_c, val_type):
+            """Non-recursive DFS to find bounds of connected cells with same type."""
+            stack = [(start_r, start_c)]
+            bounds = [
+                start_r,
+                start_c,
+                start_r,
+                start_c,
+            ]  # [min_r, min_c, max_r, max_c]
+
+            while stack:
+                r, c = stack.pop()
+
+                # Skip if already visited or out of bounds
                 if (
-                    (i[0] < 0)
-                    or (i[1] < 0)
-                    or (i[0] >= len(sheet))
-                    or (i[1] >= len(sheet.columns))
+                    r < 0
+                    or c < 0
+                    or r >= len(sheet)
+                    or c >= len(sheet.columns)
+                    or visited[r][c]
                 ):
                     continue
-                match = replace_nan(sheet.iloc[i[0], i[1]])
-                if not visited[i[0]][i[1]] and val_type == match:
-                    new_bounds = dfs(i[0], i[1], val_type)
-                    bounds = [
-                        min(new_bounds[0], bounds[0]),
-                        min(new_bounds[1], bounds[1]),
-                        max(new_bounds[2], bounds[2]),
-                        max(new_bounds[3], bounds[3]),
-                    ]
+
+                # Check if cell type matches
+                match = replace_nan(sheet.iloc[r, c])
+                if val_type != match:
+                    continue
+
+                # Mark as visited and update bounds
+                visited[r][c] = True
+                bounds[0] = min(bounds[0], r)  # min_r
+                bounds[1] = min(bounds[1], c)  # min_c
+                bounds[2] = max(bounds[2], r)  # max_r
+                bounds[3] = max(bounds[3], c)  # max_c
+
+                # Add neighbors to stack (up, down, left, right)
+                stack.append((r - 1, c))
+                stack.append((r + 1, c))
+                stack.append((r, c - 1))
+                stack.append((r, c + 1))
+
             return bounds
 
         m = len(sheet)
@@ -485,7 +551,7 @@ class SheetCompressor:
             for c in range(n):
                 if not visited[r][c]:
                     val_type = replace_nan(sheet.iloc[r, c])
-                    bounds = dfs(r, c, val_type)
+                    bounds = dfs_iterative(r, c, val_type)
                     area_size = (bounds[2] - bounds[0] + 1) * (
                         bounds[3] - bounds[1] + 1
                     )
