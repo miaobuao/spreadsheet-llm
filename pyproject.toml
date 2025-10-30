@@ -9,6 +9,7 @@ authors = [{ name = "Yang", email = "your.email@example.com" }]
 keywords = ["spreadsheet", "llm", "compression"]
 dependencies = [
     "datasets==3.6.0",
+    "dotenv>=0.9.9",
     "langchain>=1.0.2",
     "langchain-openai>=1.0.1",
     "numpy",
