@@ -83,6 +83,12 @@ Examples:
   # Custom prompt for recognition
   python main.py input.xlsx -r -p "Find all tables with revenue data"
 
+  # Process a specific sheet by index (0-based)
+  python main.py input.xlsx -s 1
+
+  # Process a specific sheet by name
+  python main.py input.xlsx -s "Financial Statements"
+
   # Use custom OpenAI-compatible API (e.g., local LLM)
   export OPENAI_BASE_URL=http://localhost:1234/v1
   export OPENAI_API_KEY=your-api-key
@@ -142,6 +148,14 @@ Environment Variables:
         "--original-coords",
         action="store_true",
         help="Return original spreadsheet coordinates instead of compressed coordinates (only with --recognize)",
+    )
+
+    parser.add_argument(
+        "-s",
+        "--sheet",
+        type=str,
+        default="0",
+        help="Sheet to process. Can be sheet index (0-based) or sheet name (default: 0, the first sheet)",
     )
 
     # Parse arguments
@@ -210,7 +224,28 @@ Environment Variables:
     wrapper = SpreadsheetLLMWrapper()
 
     if wb := wrapper.read_spreadsheet(file):
-        if result := wrapper.compress_spreadsheet(wb, format_aware=args.format_aware):
+        # Parse sheet argument: try to convert to int, otherwise use as string
+        try:
+            sheet_name = int(args.sheet)
+            if sheet_name < 0 or sheet_name >= len(wb.sheetnames):
+                logger.error(
+                    f"Sheet index {sheet_name} out of range. Valid range: 0 to {len(wb.sheetnames) - 1}"
+                )
+                exit(1)
+        except ValueError:
+            sheet_name = args.sheet
+            if sheet_name not in wb.sheetnames:
+                logger.error(
+                    f"Sheet '{sheet_name}' not found. Available sheets: {wb.sheetnames}"
+                )
+                exit(1)
+
+        # Log available sheets
+        logger.info(f"Available sheets in workbook: {wb.sheetnames}")
+
+        if result := wrapper.compress_spreadsheet(
+            wb, format_aware=args.format_aware, sheet_name=sheet_name
+        ):
             # Log anchor information
             row_count = len(result.anchors.row_anchors)
             col_count = len(result.anchors.column_anchors)

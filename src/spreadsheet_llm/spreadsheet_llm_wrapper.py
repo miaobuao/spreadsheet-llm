@@ -31,6 +31,7 @@ class CompressionResult(NamedTuple):
     sheet_compressor: SheetCompressor
     anchors: AnchorsInfo
     compressed_sheet: pd.DataFrame
+    sheet_name: str
 
 
 class CellRangeItem(BaseModel):
@@ -86,7 +87,9 @@ class SpreadsheetLLMWrapper:
         return wb
 
     # Takes a file, compresses it
-    def compress_spreadsheet(self, wb, format_aware: bool = False):
+    def compress_spreadsheet(
+        self, wb, format_aware: bool = False, sheet_name: int | str | None = None
+    ):
         """
         Compress spreadsheet using SpreadsheetLLM algorithm.
 
@@ -95,13 +98,38 @@ class SpreadsheetLLMWrapper:
             format_aware: If True, enables format-aware aggregation in dict output.
                          Groups cells by both value AND data type (e.g., "100 (Integer)").
                          If False (default), groups cells only by value.
+            sheet_name: Sheet to process. Can be:
+                       - None: use active sheet (default)
+                       - int: sheet index (0-based)
+                       - str: sheet name (e.g., "Sheet1", "Financial Statements")
 
         Returns:
             CompressionResult containing areas, compress_dict, sheet_compressor, and anchors
         """
         sheet_compressor = SheetCompressor(format_aware=format_aware)
+
+        # Determine which sheet to process
+        if sheet_name is None:
+            # Use active sheet
+            actual_sheet_name = wb.active.title
+            logger.info(
+                f"Processing active sheet: '{actual_sheet_name}' (total sheets: {len(wb.sheetnames)})"
+            )
+        elif isinstance(sheet_name, int):
+            actual_sheet_name = wb.sheetnames[sheet_name]
+            logger.info(
+                f"Processing sheet index {sheet_name}: '{actual_sheet_name}' (total sheets: {len(wb.sheetnames)})"
+            )
+        else:
+            actual_sheet_name = sheet_name
+            logger.info(
+                f"Processing sheet by name: '{sheet_name}' (total sheets: {len(wb.sheetnames)})"
+            )
+
         # header=None: treat all rows as data, don't auto-generate column names
-        sheet = pd.read_excel(wb, engine="openpyxl", header=None)
+        sheet = pd.read_excel(
+            wb, engine="openpyxl", header=None, sheet_name=actual_sheet_name
+        )
 
         # Reset index and column names to integers
         sheet = sheet.reset_index(drop=True)
@@ -178,6 +206,7 @@ class SpreadsheetLLMWrapper:
             sheet_compressor=sheet_compressor,
             anchors=anchors,
             compressed_sheet=sheet,
+            sheet_name=actual_sheet_name,
         )
 
     def serialize_areas(self, areas, sheet_compressor):

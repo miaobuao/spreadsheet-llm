@@ -301,7 +301,7 @@ class SheetCompressor:
             if len(sheet.columns) > 0
             else 0
         )
-        logger.warning(
+        logger.info(
             f"Retention rate: {len(self.row_candidates)}/{len(sheet)} rows ({row_retention_pct:.1f}%), "
             f"{len(self.column_candidates)}/{len(sheet.columns)} cols ({col_retention_pct:.1f}%)"
         )
@@ -396,7 +396,9 @@ class SheetCompressor:
             # Log progress for keys with many cells or periodically
             cell_count = len(v)
             if cell_count > 100:
-                logger.info(f"Processing key {idx}/{total_keys}: '{k}' with {cell_count} cells...")
+                logger.info(
+                    f"Processing key {idx}/{total_keys}: '{k}' with {cell_count} cells..."
+                )
             elif idx % 50 == 0:
                 logger.debug(f"Progress: {idx}/{total_keys} keys processed")
 
