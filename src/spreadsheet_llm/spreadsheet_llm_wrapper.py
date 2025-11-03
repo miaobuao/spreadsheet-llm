@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
 
 from spreadsheet_llm.index_column_converter import IndexColumnConverter
+from spreadsheet_llm.range_compressor import compress_range
 from spreadsheet_llm.sheet_compressor import SheetCompressor
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,29 @@ class CellRangeList(BaseModel):
     )
     items: List[CellRangeItem] = Field(
         description="List of cell ranges found in the spreadsheet"
+    )
+
+
+class CellRangeItemWithEncoding(BaseModel):
+    """Cell range with optional title and compressed encoding."""
+
+    title: Optional[str] = Field(
+        None, description="Optional title or label for this range"
+    )
+    range: str = Field(description="Cell range address (e.g., 'A1:B5', 'C3')")
+    compressed_dict: Dict[Any, List[str]] = Field(
+        description="Inverted index (compressed representation) of this range"
+    )
+
+
+class CellRangeListWithEncoding(BaseModel):
+    """List of cell ranges with compressed encoding and reasoning."""
+
+    reasoning: str = Field(
+        description="Step-by-step reasoning process for identifying the cell ranges"
+    )
+    items: List[CellRangeItemWithEncoding] = Field(
+        description="List of cell ranges with compressed representations"
     )
 
 
@@ -111,16 +135,21 @@ class SpreadsheetLLMWrapper:
         # Determine which sheet to process
         if sheet_name is None:
             # Use active sheet
-            actual_sheet_name = wb.active.title
+            ws = wb.active
+            if ws is None:
+                raise ValueError("Workbook has no active sheet.")
+            actual_sheet_name = ws.title
             logger.info(
                 f"Processing active sheet: '{actual_sheet_name}' (total sheets: {len(wb.sheetnames)})"
             )
         elif isinstance(sheet_name, int):
-            actual_sheet_name = wb.sheetnames[sheet_name]
+            ws = wb.worksheets[sheet_name]
+            actual_sheet_name = ws.title
             logger.info(
                 f"Processing sheet index {sheet_name}: '{actual_sheet_name}' (total sheets: {len(wb.sheetnames)})"
             )
         else:
+            ws = wb[sheet_name]
             actual_sheet_name = sheet_name
             logger.info(
                 f"Processing sheet by name: '{sheet_name}' (total sheets: {len(wb.sheetnames)})"
@@ -172,7 +201,7 @@ class SpreadsheetLLMWrapper:
 
         # Encoding
         markdown = sheet_compressor.encode(
-            wb, sheet
+            ws, sheet
         )  # Paper encodes first then anchors; I chose to do this in reverse
         logger.info(f"Encoded markdown shape: {markdown.shape}")
         logger.debug(f"Markdown columns: {markdown.columns.tolist()}")
@@ -290,60 +319,11 @@ class SpreadsheetLLMWrapper:
         with open(file, "w+", encoding="utf-8") as f:
             f.write(mapping_str)
 
-    def convert_compressed_to_original(
-        self, compressed_coord: str, sheet_compressor
-    ) -> str:
-        """
-        Convert compressed coordinate(s) to original coordinate(s).
-
-        Uses the coordinate mapping table from get_coordinate_mapping() for direct lookup.
-
-        Args:
-            compressed_coord: Compressed coordinate string, can be:
-                - Single cell: "A1", "B5"
-                - Range: "A1:B5", "C3:D10"
-                - Multiple ranges: "A1,B2:B5,C3"
-            sheet_compressor: SheetCompressor instance with coordinate mapping
-
-        Returns:
-            Original coordinate string in the same format as input
-
-        Examples:
-            "A1" -> "A1" (if A1 maps to A1)
-            "B5" -> "C10" (if compressed B5 maps to original C10)
-            "A1:B3" -> "A1:C5" (range conversion)
-            "A1,B2:B5" -> "A1,C3:C8" (multiple ranges)
-        """
-        # Get the complete coordinate mapping table
-        mapping = sheet_compressor.get_coordinate_mapping()
-
-        def convert_single_cell(cell: str) -> str:
-            """Convert a single cell coordinate using the mapping table"""
-            cell = cell.strip()
-
-            # Direct lookup in mapping table
-            if cell in mapping:
-                return mapping[cell]
-            else:
-                logger.warning(f"Cell {cell} not found in mapping table")
-                return cell
-
-        def convert_range(range_str: str) -> str:
-            """Convert a cell range (e.g., 'A1:B5')"""
-            if ":" in range_str:
-                start, end = range_str.split(":")
-                return f"{convert_single_cell(start)}:{convert_single_cell(end)}"
-            else:
-                return convert_single_cell(range_str)
-
-        # Handle multiple ranges separated by commas
-        parts = compressed_coord.split(",")
-        converted_parts = [convert_range(part.strip()) for part in parts]
-
-        return ",".join(converted_parts)
-
     def recognize(
-        self, compress_dict, model: BaseChatModel, user_prompt: str | None = None
+        self,
+        compress_dict: dict,
+        model: BaseChatModel,
+        user_prompt: str | None = None,
     ) -> CellRangeList:
         """
         Use LLM to extract structured cell ranges from spreadsheet content with Chain of Thought reasoning.
@@ -419,8 +399,8 @@ class SpreadsheetLLMWrapper:
 
     def recognize_original(
         self,
-        compress_dict,
-        sheet_compressor,
+        compress_dict: dict,
+        sheet_compressor: SheetCompressor,
         model: BaseChatModel,
         user_prompt: str | None = None,
     ) -> CellRangeList:
@@ -459,9 +439,7 @@ class SpreadsheetLLMWrapper:
         logger.info("Converting compressed coordinates to original coordinates")
         converted_items = []
         for item in compressed_result.items:
-            original_range = self.convert_compressed_to_original(
-                item.range, sheet_compressor
-            )
+            original_range = sheet_compressor.convert_compressed_to_original(item.range)
             converted_items.append(
                 CellRangeItem(title=item.title, range=original_range)
             )
@@ -471,4 +449,230 @@ class SpreadsheetLLMWrapper:
         # Return new CellRangeList with original coordinates
         return CellRangeList(
             reasoning=compressed_result.reasoning, items=converted_items
+        )
+
+    def recognize_with_compressed_range(
+        self,
+        wb: openpyxl.Workbook,
+        compression_result: CompressionResult,
+        model: BaseChatModel,
+        user_prompt: str | None = None,
+        format_aware: bool = False,
+    ) -> CellRangeListWithEncoding:
+        """
+        Use LLM to extract cell ranges and return with their TRUE compressed representations.
+
+        For each recognized range, this function:
+        1. Converts compressed coordinates to original coordinates
+        2. Extracts that range from the original workbook
+        3. Re-compresses that specific range to generate its TRUE encoding
+
+        This ensures the returned compress_dict reflects the actual structure of each range,
+        not just a filtered view of the globally compressed sheet.
+
+        Args:
+            wb: Openpyxl workbook instance
+            compression_result: CompressionResult from compress_spreadsheet, containing:
+                - compress_dict: for range recognition
+                - sheet_compressor: for coordinate conversion
+                - sheet_name: which sheet was compressed
+            model: LangChain ChatModel instance
+            user_prompt: Optional user instruction
+            format_aware: If True, use format-aware compression for each range
+
+        Returns:
+            CellRangeListWithEncoding with compressed coordinates and TRUE encodings
+
+        Example:
+            >>> from langchain_openai import ChatOpenAI
+            >>> model = ChatOpenAI(model="gpt-4o-mini")
+            >>> wrapper = SpreadsheetLLMWrapper()
+            >>> wb = wrapper.read_spreadsheet("data.xlsx")
+            >>> result = wrapper.compress_spreadsheet(wb, format_aware=True)
+            >>> recognition = wrapper.recognize_with_compressed_range(
+            ...     wb, result, model=model, format_aware=True
+            ... )
+            >>> for item in recognition.items:
+            ...     print(f"{item.title}: {item.range}")
+            ...     print(f"  TRUE Encoding: {item.compressed_dict}")
+        """
+        # Get recognized ranges (compressed coordinates)
+        recognized = self.recognize(
+            compression_result.compress_dict,
+            model,
+            user_prompt,
+        )
+
+        # For each range, generate its TRUE compressed representation
+        logger.info(
+            f"Generating TRUE encodings for {len(recognized.items)} recognized ranges"
+        )
+        items_with_encoding: List[CellRangeItemWithEncoding] = []
+
+        for item in recognized.items:
+            # Convert compressed range to original coordinates
+            original_range = (
+                compression_result.sheet_compressor.convert_compressed_to_original(
+                    item.range
+                )
+            )
+
+            logger.info(
+                f"Processing range '{item.title}': {item.range} (compressed) -> {original_range} (original)"
+            )
+
+            # Parse original range (e.g., "A1:B10" or "A1,B2:B5")
+            # For simplicity, handle single range first
+            if "," in original_range:
+                logger.warning(
+                    f"Multiple ranges not yet supported, using first range only: {original_range}"
+                )
+                original_range = original_range.split(",")[0]
+
+            # Parse as (start, end) tuple
+            if ":" in original_range:
+                start_cell, end_cell = original_range.split(":")
+            else:
+                # Single cell
+                start_cell = end_cell = original_range
+
+            # Get the worksheet
+            if isinstance(compression_result.sheet_name, int):
+                ws = wb.worksheets[compression_result.sheet_name]
+            else:
+                ws = wb[compression_result.sheet_name]
+
+            # Re-compress this specific range from original workbook
+            range_compress_dict = compress_range(
+                ws,
+                (start_cell, end_cell),
+                format_aware=format_aware,
+            )
+
+            logger.info(
+                f"Generated TRUE encoding for '{item.title}': {len(range_compress_dict)} keys"
+            )
+
+            items_with_encoding.append(
+                CellRangeItemWithEncoding(
+                    title=item.title,
+                    range=item.range,  # Keep compressed coordinates
+                    compressed_dict=range_compress_dict,
+                )
+            )
+
+        return CellRangeListWithEncoding(
+            reasoning=recognized.reasoning, items=items_with_encoding
+        )
+
+    def recognize_original_with_compressed_range(
+        self,
+        wb: openpyxl.Workbook,
+        compression_result: CompressionResult,
+        model: BaseChatModel,
+        user_prompt: str | None = None,
+        format_aware: bool = False,
+    ) -> CellRangeListWithEncoding:
+        """
+        Use LLM to extract cell ranges in original coordinates with TRUE compressed representations.
+
+        For each recognized range, this function:
+        1. Converts compressed coordinates to original coordinates
+        2. Extracts that range from the original workbook
+        3. Re-compresses that specific range to generate its TRUE encoding
+        4. Returns results with original coordinates
+
+        This ensures the returned compress_dict reflects the actual structure of each range,
+        not just a filtered view of the globally compressed sheet.
+
+        Args:
+            wb: Openpyxl workbook instance
+            compression_result: CompressionResult from compress_spreadsheet, containing:
+                - compress_dict: for range recognition
+                - sheet_compressor: for coordinate conversion
+                - sheet_name: which sheet was compressed
+            model: LangChain ChatModel instance
+            user_prompt: Optional user instruction
+            format_aware: If True, use format-aware compression for each range
+
+        Returns:
+            CellRangeListWithEncoding with original coordinates and TRUE encodings
+
+        Example:
+            >>> from langchain_openai import ChatOpenAI
+            >>> model = ChatOpenAI(model="gpt-4o-mini")
+            >>> wrapper = SpreadsheetLLMWrapper()
+            >>> wb = wrapper.read_spreadsheet("data.xlsx")
+            >>> result = wrapper.compress_spreadsheet(wb, format_aware=True)
+            >>> recognition = wrapper.recognize_original_with_compressed_range(
+            ...     wb, result, model=model, format_aware=True
+            ... )
+            >>> for item in recognition.items:
+            ...     print(f"{item.title}: {item.range}")  # Original coordinates
+            ...     print(f"  TRUE Encoding: {item.compressed_dict}")
+        """
+        # Get recognized ranges (compressed coordinates)
+        recognized = self.recognize(
+            compression_result.compress_dict, model, user_prompt
+        )
+
+        # For each range, generate its TRUE compressed representation
+        logger.info(
+            f"Generating TRUE encodings for {len(recognized.items)} recognized ranges (original coordinates)"
+        )
+        items_with_encoding = []
+
+        for item in recognized.items:
+            # Convert compressed range to original coordinates
+            original_range = (
+                compression_result.sheet_compressor.convert_compressed_to_original(
+                    item.range
+                )
+            )
+            logger.info(
+                f"Processing range '{item.title}': {item.range} (compressed) -> {original_range} (original)"
+            )
+
+            # Parse original range (e.g., "A1:B10" or "A1,B2:B5")
+            # For simplicity, handle single range first
+            if "," in original_range:
+                logger.warning(
+                    f"Multiple ranges not yet supported, using first range only: {original_range}"
+                )
+                original_range = original_range.split(",")[0]
+
+            # Parse as (start, end) tuple
+            if ":" in original_range:
+                start_cell, end_cell = original_range.split(":")
+            else:
+                # Single cell
+                start_cell = end_cell = original_range
+
+            # Get the worksheet
+            if isinstance(compression_result.sheet_name, int):
+                ws = wb.worksheets[compression_result.sheet_name]
+            else:
+                ws = wb[compression_result.sheet_name]
+
+            # Re-compress this specific range from original workbook
+            range_compress_dict = compress_range(
+                ws,
+                (start_cell, end_cell),
+                format_aware=format_aware,
+            )
+
+            logger.info(
+                f"Generated TRUE encoding for '{item.title}': {len(range_compress_dict)} keys"
+            )
+
+            items_with_encoding.append(
+                CellRangeItemWithEncoding(
+                    title=item.title,
+                    range=original_range,  # Original coordinates
+                    compressed_dict=range_compress_dict,
+                )
+            )
+
+        return CellRangeListWithEncoding(
+            reasoning=recognized.reasoning, items=items_with_encoding
         )

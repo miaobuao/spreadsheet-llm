@@ -7,11 +7,14 @@ structured information from spreadsheets.
 
 from spreadsheet_llm import cell_range_utils as CellRangeUtils
 from spreadsheet_llm.index_column_converter import IndexColumnConverter
+from spreadsheet_llm.range_compressor import compress_range
 from spreadsheet_llm.sheet_compressor import SheetCompressor
 from spreadsheet_llm.spreadsheet_llm_wrapper import (
     RECOGNIZE_PROMPT,
     CellRangeItem,
+    CellRangeItemWithEncoding,
     CellRangeList,
+    CellRangeListWithEncoding,
     SpreadsheetLLMWrapper,
 )
 
@@ -20,9 +23,12 @@ __version__ = "0.0.1"
 __all__ = [
     "SpreadsheetLLMWrapper",
     "CellRangeList",
+    "CellRangeListWithEncoding",
     "CellRangeItem",
+    "CellRangeItemWithEncoding",
     "RECOGNIZE_PROMPT",
     "SheetCompressor",
     "IndexColumnConverter",
     "CellRangeUtils",
+    "compress_range",
 ]

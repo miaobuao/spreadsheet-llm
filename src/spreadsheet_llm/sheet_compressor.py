@@ -79,10 +79,19 @@ class SheetCompressor:
         return format_array
 
     # Encode spreadsheet into markdown format
-    def encode(self, wb, sheet):
+    def encode(self, ws, sheet):
+        """
+        Encode a sheet into markdown format.
+
+        Args:
+            ws: Openpyxl worksheet instance (for accessing cell formats)
+            sheet: Pandas DataFrame containing the data to encode
+
+        Returns:
+            DataFrame with Address, Value, and Format columns
+        """
         converter = IndexColumnConverter()
         markdown = pd.DataFrame(columns=["Address", "Value", "Format"])
-        ws = wb.active  # Get the active worksheet from openpyxl workbook
         for rowindex, i in sheet.iterrows():
             for colindex, j in enumerate(sheet.columns.tolist()):
                 # Map compressed indices back to original indices
@@ -440,6 +449,39 @@ class SheetCompressor:
             f"Coordinate mapping: {len(mapping)} cells ({len(self.row_mapping)} rows × {len(self.column_mapping)} columns)"
         )
         return mapping
+
+    def convert_compressed_to_original(self, compressed_coord: str) -> str:
+        """
+        Convert compressed coordinate(s) to original coordinate(s).
+
+        This is a convenience wrapper around the pure function in cell_range_utils.
+        It automatically gets the coordinate mapping and calls the conversion function.
+
+        Args:
+            compressed_coord: Compressed coordinate string, can be:
+                - Single cell: "A1", "B5"
+                - Range: "A1:B5", "C3:D10"
+                - Multiple ranges: "A1,B2:B5,C3"
+
+        Returns:
+            Original coordinate string in the same format as input
+
+        Examples:
+            >>> sheet_compressor.convert_compressed_to_original("A1")
+            "A1"  # if A1 maps to A1
+            >>> sheet_compressor.convert_compressed_to_original("B5")
+            "C10"  # if compressed B5 maps to original C10
+            >>> sheet_compressor.convert_compressed_to_original("A1:B3")
+            "A1:C5"  # range conversion
+            >>> sheet_compressor.convert_compressed_to_original("A1,B2:B5")
+            "A1,C3:C8"  # multiple ranges
+        """
+        from spreadsheet_llm.cell_range_utils import (
+            convert_compressed_to_original as convert_func,
+        )
+
+        mapping = self.get_coordinate_mapping()
+        return convert_func(compressed_coord, mapping)
 
     # Key-Value to Value-Key for categories
     def inverted_category(self, markdown):

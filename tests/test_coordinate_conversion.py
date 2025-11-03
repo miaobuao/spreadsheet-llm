@@ -42,7 +42,7 @@ if __name__ == "__main__":
     ]
 
     for compressed_coord in test_cases:
-        original_coord = wrapper.convert_compressed_to_original(compressed_coord, sheet_compressor)
+        original_coord = sheet_compressor.convert_compressed_to_original(compressed_coord)
         logger.info(f"Compressed: {compressed_coord:20s} -> Original: {original_coord}")
 
     logger.info("\n" + "="*60)
@@ -57,7 +57,7 @@ if __name__ == "__main__":
     ]
 
     for key, compressed_coords in examples_from_dict:
-        original_coords = wrapper.convert_compressed_to_original(compressed_coords, sheet_compressor)
+        original_coords = sheet_compressor.convert_compressed_to_original(compressed_coords)
         logger.info(f"\nKey: {key}")
         logger.info(f"  Compressed: {compressed_coords}")
         logger.info(f"  Original:   {original_coords}")

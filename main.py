@@ -5,6 +5,7 @@ from pathlib import Path
 from termcolor import colored
 
 from spreadsheet_llm import SpreadsheetLLMWrapper
+from spreadsheet_llm.spreadsheet_llm_wrapper import CellRangeItemWithEncoding
 
 
 # Custom colored formatter for stdout
@@ -154,8 +155,8 @@ Environment Variables:
         "-s",
         "--sheet",
         type=str,
-        default="0",
-        help="Sheet to process. Can be sheet index (0-based) or sheet name (default: 0, the first sheet)",
+        default=None,
+        help="Sheet to process. Can be sheet index (0-based) or sheet name (default: None, uses active sheet)",
     )
 
     # Parse arguments
@@ -225,23 +226,28 @@ Environment Variables:
 
     if wb := wrapper.read_spreadsheet(file):
         # Parse sheet argument: try to convert to int, otherwise use as string
-        try:
-            sheet_name = int(args.sheet)
-            if sheet_name < 0 or sheet_name >= len(wb.sheetnames):
-                logger.error(
-                    f"Sheet index {sheet_name} out of range. Valid range: 0 to {len(wb.sheetnames) - 1}"
-                )
-                exit(1)
-        except ValueError:
-            sheet_name = args.sheet
-            if sheet_name not in wb.sheetnames:
-                logger.error(
-                    f"Sheet '{sheet_name}' not found. Available sheets: {wb.sheetnames}"
-                )
-                exit(1)
+        if args.sheet is None:
+            sheet_name = None
+            logger.info(f"Available sheets in workbook: {wb.sheetnames}")
+            logger.info("Using active sheet (no -s/--sheet specified)")
+        else:
+            try:
+                sheet_name = int(args.sheet)
+                if sheet_name < 0 or sheet_name >= len(wb.sheetnames):
+                    logger.error(
+                        f"Sheet index {sheet_name} out of range. Valid range: 0 to {len(wb.sheetnames) - 1}"
+                    )
+                    exit(1)
+            except ValueError:
+                sheet_name = args.sheet
+                if sheet_name not in wb.sheetnames:
+                    logger.error(
+                        f"Sheet '{sheet_name}' not found. Available sheets: {wb.sheetnames}"
+                    )
+                    exit(1)
 
-        # Log available sheets
-        logger.info(f"Available sheets in workbook: {wb.sheetnames}")
+            # Log available sheets
+            logger.info(f"Available sheets in workbook: {wb.sheetnames}")
 
         if result := wrapper.compress_spreadsheet(
             wb, format_aware=args.format_aware, sheet_name=sheet_name
@@ -323,26 +329,51 @@ Environment Variables:
 
                 try:
                     if args.original_coords:
-                        recognition_result = wrapper.recognize_original(
-                            result.compress_dict,
-                            result.sheet_compressor,
-                            model,
-                            args.user_prompt,
+                        recognition_result = (
+                            wrapper.recognize_original_with_compressed_range(
+                                wb,
+                                result,
+                                model,
+                                args.user_prompt,
+                                format_aware=args.format_aware,
+                            )
                         )
                     else:
-                        recognition_result = wrapper.recognize(
-                            result.compress_dict, model, args.user_prompt
+                        recognition_result = wrapper.recognize_with_compressed_range(
+                            wb,
+                            result,
+                            model,
+                            args.user_prompt,
+                            format_aware=args.format_aware,
                         )
 
                     # Display results
-                    logger.info("=" * 60)
+                    logger.info("=" * 80)
                     logger.info("RECOGNITION RESULTS:")
-                    logger.info("=" * 60)
+                    logger.info("=" * 80)
                     logger.info(f"\nReasoning:\n{recognition_result.reasoning}\n")
-                    logger.info(f"Found {len(recognition_result.items)} cell ranges:")
+                    logger.info(
+                        f"Found {len(recognition_result.items)} cell range(s):\n"
+                    )
+
                     for i, item in enumerate(recognition_result.items, 1):
                         title = item.title or "Untitled"
-                        logger.info(f"  {i}. {title}: {item.range}")
+                        logger.info(f"[{i}] {title}")
+                        logger.info(f"    Range: {item.range}")
+
+                        # Display compressed_dict if available
+                        if isinstance(item, CellRangeItemWithEncoding):
+                            dict_size = len(item.compressed_dict)
+                            logger.info(
+                                f"    Compressed Encoding: {dict_size} unique values"
+                            )
+
+                            logger.info("    Preview:")
+                            for key, cells in item.compressed_dict.items():
+                                cells_str = ",".join(cells)
+                                logger.info(f"      {key} → {cells_str}")
+
+                        logger.info("")  # Empty line between ranges
 
                     # Save recognition results to file
                     recognition_file = str(base_name) + suffix + "_recognition.txt"
@@ -358,10 +389,23 @@ Environment Variables:
                         )
                         for i, item in enumerate(recognition_result.items, 1):
                             title = item.title or "Untitled"
-                            f.write(f"{i}. {title}: {item.range}\n")
+                            f.write(f"[{i}] {title}\n")
+                            f.write(f"    Range: {item.range}\n")
+
+                            # Write compressed_dict if available
+                            if isinstance(item, CellRangeItemWithEncoding):
+                                dict_size = len(item.compressed_dict)
+                                f.write(
+                                    f"    Compressed Encoding: {dict_size} unique values\n"
+                                )
+                                f.write("    Entries:\n")
+                                for key, cells in item.compressed_dict.items():
+                                    cells_str = ",".join(cells)
+                                    f.write(f"      {key} → {cells_str}\n")
+                            f.write("\n")
 
                     logger.info(f"\nRecognition results saved to: {recognition_file}")
-                    logger.info("=" * 60)
+                    logger.info("=" * 80)
 
                 except Exception as e:
                     logger.error(f"Recognition failed: {e}")

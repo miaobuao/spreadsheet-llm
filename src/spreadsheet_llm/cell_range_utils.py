@@ -6,6 +6,7 @@ This module provides functions to intelligently combine multiple cell addresses
 """
 
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -307,3 +308,196 @@ def box_to_range(box: tuple[int, int, int, int]) -> str:
     end_row = row_end + 1  # Convert to 1-indexed
 
     return f"{start_col}{start_row}:{end_col}{end_row}"
+
+
+def parse_range_string(range_str: str) -> list[tuple[str, str]]:
+    """
+    Parse a range string into a list of (start_cell, end_cell) tuples.
+
+    Args:
+        range_str: Range string like "A1:B5", "A1", or "A1:B5,C3:D10"
+
+    Returns:
+        List of (start_cell, end_cell) tuples
+
+    Examples:
+        >>> parse_range_string("A1:B5")
+        [('A1', 'B5')]
+        >>> parse_range_string("A1")
+        [('A1', 'A1')]
+        >>> parse_range_string("A1:B5,C3:D10")
+        [('A1', 'B5'), ('C3', 'D10')]
+        >>> parse_range_string("A1,B2:B5")
+        [('A1', 'A1'), ('B2', 'B5')]
+    """
+    result = []
+    # Split by comma to handle multiple ranges
+    parts = range_str.split(",")
+
+    for part in parts:
+        part = part.strip()
+        if ":" in part:
+            # Range format: "A1:B5"
+            start, end = part.split(":", 1)
+            result.append((start.strip(), end.strip()))
+        else:
+            # Single cell: "A1"
+            result.append((part, part))
+
+    return result
+
+
+def get_cells_in_range(range_str: str) -> set[str]:
+    """
+    Expand a range string into a set of all individual cell addresses.
+
+    Args:
+        range_str: Range string like "A1:B5" or "A1,B2:B5"
+
+    Returns:
+        Set of cell addresses (e.g., {"A1", "A2", "B1", "B2", ...})
+
+    Examples:
+        >>> get_cells_in_range("A1:B2")
+        {'A1', 'A2', 'B1', 'B2'}
+        >>> get_cells_in_range("A1,B2")
+        {'A1', 'B2'}
+        >>> get_cells_in_range("A1:A3,B5")
+        {'A1', 'A2', 'A3', 'B5'}
+    """
+    cells = set()
+    range_tuples = parse_range_string(range_str)
+
+    for start_cell, end_cell in range_tuples:
+        # Parse start cell
+        match_start = re.match(r"^([A-Z]+)(\d+)$", start_cell.upper())
+        if not match_start:
+            logger.warning(f"Failed to parse cell: {start_cell}")
+            continue
+
+        start_col_str = match_start.group(1)
+        start_row = int(match_start.group(2))
+
+        # Parse end cell
+        match_end = re.match(r"^([A-Z]+)(\d+)$", end_cell.upper())
+        if not match_end:
+            logger.warning(f"Failed to parse cell: {end_cell}")
+            continue
+
+        end_col_str = match_end.group(1)
+        end_row = int(match_end.group(2))
+
+        # Convert column letters to indices
+        start_col_idx = col_to_index(start_col_str)
+        end_col_idx = col_to_index(end_col_str)
+
+        # Expand range to all cells
+        for col_idx in range(start_col_idx, end_col_idx + 1):
+            col_str = index_to_col(col_idx)
+            for row in range(start_row, end_row + 1):
+                cells.add(f"{col_str}{row}")
+
+    return cells
+
+
+def convert_compressed_to_original(compressed_coord: str, mapping: dict[str, str]) -> str:
+    """
+    Convert compressed coordinate(s) to original coordinate(s).
+
+    This is a pure function that uses a pre-computed mapping dictionary.
+    For convenience, use SheetCompressor.convert_compressed_to_original() instead.
+
+    Args:
+        compressed_coord: Compressed coordinate string, can be:
+            - Single cell: "A1", "B5"
+            - Range: "A1:B5", "C3:D10"
+            - Multiple ranges: "A1,B2:B5,C3"
+        mapping: Dictionary mapping compressed coordinates to original coordinates
+                 (e.g., {"A1": "A1", "B5": "C10", ...})
+
+    Returns:
+        Original coordinate string in the same format as input
+
+    Examples:
+        >>> mapping = {"A1": "A1", "B5": "C10"}
+        >>> convert_compressed_to_original("A1", mapping)
+        'A1'
+        >>> convert_compressed_to_original("B5", mapping)
+        'C10'
+        >>> convert_compressed_to_original("A1:B5", mapping)
+        'A1:C10'
+        >>> convert_compressed_to_original("A1,B2:B5", mapping)
+        'A1,C3:C8'
+    """
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    def convert_single_cell(cell: str) -> str:
+        """Convert a single cell coordinate using the mapping table"""
+        cell = cell.strip()
+
+        # Direct lookup in mapping table
+        if cell in mapping:
+            return mapping[cell]
+        else:
+            logger.warning(f"Cell {cell} not found in mapping table")
+            return cell
+
+    def convert_range(range_str: str) -> str:
+        """Convert a cell range (e.g., 'A1:B5')"""
+        if ":" in range_str:
+            start, end = range_str.split(":")
+            return f"{convert_single_cell(start)}:{convert_single_cell(end)}"
+        else:
+            return convert_single_cell(range_str)
+
+    # Handle multiple ranges separated by commas
+    parts = compressed_coord.split(",")
+    converted_parts = [convert_range(part.strip()) for part in parts]
+
+    return ",".join(converted_parts)
+
+
+def filter_cell_list_by_range(cell_list: list[str], target_range: str) -> list[str]:
+    """
+    Filter a list of cells/ranges by a target range.
+
+    Returns globally optimized combined result.
+    This function collects all cells from the list that intersect with the target range,
+    then performs a single global optimization to combine them into optimal ranges.
+
+    Args:
+        cell_list: List containing cells ("A1") and/or ranges ("A1:B10")
+        target_range: Target range to filter by (e.g., "A1:C5")
+
+    Returns:
+        Optimally combined list of ranges/cells.
+        Empty list if no intersection.
+
+    Examples:
+        >>> filter_cell_list_by_range(["A1:A5", "A6:A10"], "A1:A10")
+        ['A1:A10']  # Global optimization: merges into single range
+        >>> filter_cell_list_by_range(["A1", "B2:B10"], "A1:C5")
+        ['A1', 'B2:B5']
+        >>> filter_cell_list_by_range(["A1", "A2", "A3"], "A1:A10")
+        ['A1:A3']  # Combines consecutive cells
+        >>> filter_cell_list_by_range(["B2:B10"], "C1:C10")
+        []  # No intersection
+    """
+    target_cells = get_cells_in_range(target_range)
+    intersection_cells = set()
+
+    # Collect all intersecting cells
+    for cell_or_range in cell_list:
+        if ":" in cell_or_range:
+            cells = get_cells_in_range(cell_or_range)
+        else:
+            cells = {cell_or_range}
+        intersection_cells.update(cells & target_cells)
+
+    if not intersection_cells:
+        return []
+
+    # Global optimization: combine all cells into optimal ranges
+    return combine_cells(list(intersection_cells))
