@@ -17,6 +17,7 @@ dependencies = [
     "pandas>=2.2",
     "pydantic>=2.12.3",
     "pytest>=8.4.2",
+    "pyxlsb>=1.0.10",
     "rich>=14.2.0",
     "streamlit",
     "termcolor>=3.1.0",

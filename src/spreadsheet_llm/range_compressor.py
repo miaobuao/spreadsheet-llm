@@ -12,12 +12,13 @@ import pandas as pd
 
 from spreadsheet_llm.index_column_converter import IndexColumnConverter
 from spreadsheet_llm.sheet_compressor import SheetCompressor
+from spreadsheet_llm.unified_workbook import UnifiedWorksheet
 
 logger = logging.getLogger(__name__)
 
 
 def compress_range(
-    ws,
+    ws: UnifiedWorksheet,
     range_spec: Tuple[str, str],
     format_aware: bool = False,
 ) -> Dict[str, List[str]]:
@@ -28,13 +29,16 @@ def compress_range(
     anchor detection step. It directly encodes the given range and generates
     an inverted index mapping values/types to cell addresses.
 
+    Supports multiple formats (.xlsx, .xlsb, .xls) through UnifiedWorksheet.
+
     Args:
-        ws: Openpyxl worksheet instance
+        ws: UnifiedWorksheet instance
         range_spec: Tuple of (start_cell, end_cell) defining the range.
                    Examples: ("A1", "B10"), ("C3", "C3")
         format_aware: If True, enables format-aware aggregation.
                      Groups cells by both value AND data type.
                      If False (default), groups cells only by value.
+                     Note: Format information only available for .xlsx files.
 
     Returns:
         Dict[str, List[str]]: Inverted index mapping values/types to cell addresses.
@@ -42,9 +46,9 @@ def compress_range(
                              entire sheet (e.g., "A5", "B10").
 
     Example:
-        >>> import openpyxl
+        >>> from spreadsheet_llm.unified_workbook import create_unified_workbook
         >>> from spreadsheet_llm.range_compressor import compress_range
-        >>> wb = openpyxl.load_workbook("data.xlsx")
+        >>> wb = create_unified_workbook("data.xlsx")
         >>> ws = wb.active
         >>> result = compress_range(ws, ("A1", "C10"), format_aware=True)
         >>> for key, cells in result.items():

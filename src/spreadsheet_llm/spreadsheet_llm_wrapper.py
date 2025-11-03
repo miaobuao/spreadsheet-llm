@@ -2,7 +2,6 @@ import json
 import logging
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
-import openpyxl
 import pandas as pd
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage
@@ -11,6 +10,7 @@ from pydantic import BaseModel, Field
 from spreadsheet_llm.index_column_converter import IndexColumnConverter
 from spreadsheet_llm.range_compressor import compress_range
 from spreadsheet_llm.sheet_compressor import SheetCompressor
+from spreadsheet_llm.unified_workbook import UnifiedWorkbook, create_unified_workbook
 
 logger = logging.getLogger(__name__)
 
@@ -105,23 +105,39 @@ Use Chain of Thought reasoning to ensure accurate identification.
 
 class SpreadsheetLLMWrapper:
 
-    def read_spreadsheet(self, file):
+    def read_spreadsheet(self, file) -> UnifiedWorkbook:
+        """
+        Read spreadsheet file and return unified workbook interface.
 
-        wb = openpyxl.load_workbook(file)
-        return wb
+        Supports multiple formats: .xlsx, .xlsb, .xls
+
+        Args:
+            file: Path to spreadsheet file
+
+        Returns:
+            UnifiedWorkbook instance that provides consistent API
+            regardless of underlying format
+        """
+        return create_unified_workbook(file)
 
     # Takes a file, compresses it
     def compress_spreadsheet(
-        self, wb, format_aware: bool = False, sheet_name: int | str | None = None
+        self,
+        wb: UnifiedWorkbook,
+        format_aware: bool = False,
+        sheet_name: int | str | None = None,
     ):
         """
         Compress spreadsheet using SpreadsheetLLM algorithm.
 
+        Supports multiple formats (.xlsx, .xlsb, .xls) through unified interface.
+
         Args:
-            wb: Openpyxl workbook instance
+            wb: UnifiedWorkbook instance (from read_spreadsheet())
             format_aware: If True, enables format-aware aggregation in dict output.
                          Groups cells by both value AND data type (e.g., "100 (Integer)").
                          If False (default), groups cells only by value.
+                         Note: Format information only available for .xlsx files.
             sheet_name: Sheet to process. Can be:
                        - None: use active sheet (default)
                        - int: sheet index (0-based)
@@ -156,9 +172,7 @@ class SpreadsheetLLMWrapper:
             )
 
         # header=None: treat all rows as data, don't auto-generate column names
-        sheet = pd.read_excel(
-            wb, engine="openpyxl", header=None, sheet_name=actual_sheet_name
-        )
+        sheet = wb.excel_file.parse(actual_sheet_name, header=None)
 
         # Reset index and column names to integers
         sheet = sheet.reset_index(drop=True)
@@ -453,7 +467,7 @@ class SpreadsheetLLMWrapper:
 
     def recognize_with_compressed_range(
         self,
-        wb: openpyxl.Workbook,
+        wb: UnifiedWorkbook,
         compression_result: CompressionResult,
         model: BaseChatModel,
         user_prompt: str | None = None,
@@ -471,7 +485,7 @@ class SpreadsheetLLMWrapper:
         not just a filtered view of the globally compressed sheet.
 
         Args:
-            wb: Openpyxl workbook instance
+            wb: UnifiedWorkbook instance
             compression_result: CompressionResult from compress_spreadsheet, containing:
                 - compress_dict: for range recognition
                 - sheet_compressor: for coordinate conversion
@@ -567,7 +581,7 @@ class SpreadsheetLLMWrapper:
 
     def recognize_original_with_compressed_range(
         self,
-        wb: openpyxl.Workbook,
+        wb: UnifiedWorkbook,
         compression_result: CompressionResult,
         model: BaseChatModel,
         user_prompt: str | None = None,
@@ -586,7 +600,7 @@ class SpreadsheetLLMWrapper:
         not just a filtered view of the globally compressed sheet.
 
         Args:
-            wb: Openpyxl workbook instance
+            wb: UnifiedWorkbook instance
             compression_result: CompressionResult from compress_spreadsheet, containing:
                 - compress_dict: for range recognition
                 - sheet_compressor: for coordinate conversion

@@ -9,6 +9,7 @@ from pandas.tseries.api import guess_datetime_format  # type: ignore
 
 from spreadsheet_llm.cell_range_utils import combine_cells
 from spreadsheet_llm.index_column_converter import IndexColumnConverter
+from spreadsheet_llm.unified_workbook import UnifiedCell, UnifiedWorksheet
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
@@ -52,7 +53,18 @@ class SheetCompressor:
         )  # Maps compressed column index -> original column index
 
     # Obtain border, fill, bold info about cell; incomplete
-    def get_format(self, cell):
+    def get_format(self, cell: UnifiedCell):
+        """
+        Get format information from a cell.
+
+        Args:
+            cell: UnifiedCell instance (supports both openpyxl and pyxlsb)
+                 For xlsx: returns openpyxl format objects
+                 For xlsb: returns empty format objects (all None/False)
+
+        Returns:
+            List of format strings
+        """
         format_array = []
 
         # Border
@@ -79,19 +91,20 @@ class SheetCompressor:
         return format_array
 
     # Encode spreadsheet into markdown format
-    def encode(self, ws, sheet):
+    def encode(self, ws: UnifiedWorksheet, sheet):
         """
         Encode a sheet into markdown format.
 
         Args:
-            ws: Openpyxl worksheet instance (for accessing cell formats)
+            ws: UnifiedWorksheet instance (for accessing cell formats)
+                Supports both openpyxl and pyxlsb formats
             sheet: Pandas DataFrame containing the data to encode
 
         Returns:
             DataFrame with Address, Value, and Format columns
         """
         converter = IndexColumnConverter()
-        markdown = pd.DataFrame(columns=["Address", "Value", "Format"])
+        rows = []
         for rowindex, i in sheet.iterrows():
             for colindex, j in enumerate(sheet.columns.tolist()):
                 # Map compressed indices back to original indices
@@ -106,15 +119,15 @@ class SheetCompressor:
                 # This keeps the dict compact and avoids sparse coordinates
                 address = converter.parse_colindex(colindex + 1) + str(rowindex + 1)
 
-                new_row = pd.DataFrame(
-                    [
-                        address,
-                        i[j],
-                        self.get_format(cell),
-                    ]
-                ).T
-                new_row.columns = markdown.columns
-                markdown = pd.concat([markdown, new_row])
+                rows.append(
+                    {
+                        "Address": address,
+                        "Value": i[j],
+                        "Format": self.get_format(cell),
+                    }
+                )
+
+        markdown = pd.DataFrame(rows, columns=["Address", "Value", "Format"])
         return markdown
 
     # Checks for identical dtypes across row/column

@@ -103,7 +103,7 @@ Environment Variables:
 
     # Required arguments
     parser.add_argument(
-        "input_file", type=str, help="Path to the input Excel file (.xlsx)"
+        "input_file", type=str, help="Path to the input Excel file (.xlsx, .xlsb, .xls)"
     )
 
     # Optional arguments
@@ -183,8 +183,10 @@ Environment Variables:
         logger.error(f"Input file not found: {file}")
         exit(1)
 
-    if file.suffix.lower() not in [".xlsx", ".xls"]:
-        logger.error(f"Input file must be an Excel file (.xlsx or .xls): {file}")
+    if file.suffix.lower() not in [".xlsx", ".xls", ".xlsb"]:
+        logger.error(
+            f"Input file must be an Excel file (.xlsx, .xlsb, or .xls): {file}"
+        )
         exit(1)
 
     logger.info(f"Input file: {file}")
@@ -250,7 +252,9 @@ Environment Variables:
             logger.info(f"Available sheets in workbook: {wb.sheetnames}")
 
         if result := wrapper.compress_spreadsheet(
-            wb, format_aware=args.format_aware, sheet_name=sheet_name
+            wb,
+            format_aware=args.format_aware,
+            sheet_name=sheet_name,
         ):
             # Log anchor information
             row_count = len(result.anchors.row_anchors)
