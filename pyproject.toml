@@ -5,16 +5,17 @@ description = "A Python package for spreadsheet compression and LLM-based analys
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "Yang", email = "your.email@example.com" }]
+authors = [{ name = "Yang" }]
 keywords = ["spreadsheet", "llm", "compression"]
 dependencies = [
-    "datasets==3.6.0",
+    "claude-agent-sdk>=0.1.6",
     "dotenv>=0.9.9",
     "langchain>=1.0.2",
     "langchain-openai>=1.0.1",
     "numpy",
     "openpyxl>=3.1.5",
     "pandas>=2.2",
+    "prompt-toolkit>=3.0.52",
     "pydantic>=2.12.3",
     "pytest>=8.4.2",
     "pyxlsb>=1.0.10",
@@ -25,7 +26,7 @@ dependencies = [
 
 
 [tool.hatch.build]
-packages = ["src/spreadsheet_llm"]
+packages = ["packages/spreadsheet_llm"]
 
 [build-system]
 requires = ["hatchling"]

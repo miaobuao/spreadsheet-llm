@@ -1,13 +1,16 @@
 import datetime
 import logging
 import re
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 from pandas.tseries.api import guess_datetime_format  # type: ignore
 
-from spreadsheet_llm.cell_range_utils import combine_cells
+from spreadsheet_llm.cell_range_utils import (
+    combine_cells,
+    convert_compressed_to_original,
+)
 from spreadsheet_llm.index_column_converter import IndexColumnConverter
 from spreadsheet_llm.unified_workbook import UnifiedCell, UnifiedWorksheet
 
@@ -104,30 +107,75 @@ class SheetCompressor:
             DataFrame with Address, Value, and Format columns
         """
         converter = IndexColumnConverter()
-        rows = []
-        for rowindex, i in sheet.iterrows():
-            for colindex, j in enumerate(sheet.columns.tolist()):
-                # Map compressed indices back to original indices
-                original_row = self.row_mapping[rowindex]
-                original_col = self.column_mapping[colindex]
 
-                # openpyxl uses 1-based indexing for rows and columns
-                # Use original indices to get cell format from workbook
-                cell = ws.cell(row=original_row + 1, column=original_col + 1)
+        # Pre-compute column addresses to avoid repeated conversion
+        columns_list = sheet.columns.tolist()
+        num_cols = len(columns_list)
+        col_addresses = [
+            converter.parse_colindex(colindex + 1) for colindex in range(num_cols)
+        ]
+
+        # Pre-allocate lists for better performance
+        addresses = []
+        values = []
+        formats = []
+
+        # Get numpy array for faster access
+        sheet_values = cast(np.ndarray, sheet.values)
+
+        # Get all original row and column indices we need
+        original_rows = [self.row_mapping[row_index] for row_index in range(len(sheet))]
+        original_cols = list(self.column_mapping.values())
+
+        min_row = min(original_rows) + 1  # +1 for 1-based indexing
+        max_row = max(original_rows) + 1
+        min_col = min(original_cols) + 1
+        max_col = max(original_cols) + 1
+
+        # Fetch ALL needed cells in one call to iter_rows
+        # This is the most efficient approach - only ONE call instead of O(rows) calls
+        all_rows_iter = ws.iter_rows(
+            min_row=min_row,
+            max_row=max_row,
+            min_col=min_col,
+            max_col=max_col,
+        )
+
+        # Create mapping from original row index to row cells
+        # iter_rows returns consecutive rows from min_row to max_row
+        original_row_to_cells = {}
+        for i, row_cells in enumerate(all_rows_iter):
+            original_row_idx = min_row - 1 + i  # Convert back to 0-based
+            original_row_to_cells[original_row_idx] = row_cells
+
+        # Create mapping from original column index to position in row_cells tuple
+        col_to_position = {min_col - 1 + i: i for i in range(max_col - min_col + 1)}
+
+        # Iterate through compressed rows using enumerate for clarity
+        for row_index, row_data in enumerate(sheet_values):
+            original_row = self.row_mapping[row_index]
+            row_addr_suffix = str(row_index + 1)
+
+            # Get the cells for this row from our pre-fetched data
+            row_cells = original_row_to_cells[original_row]
+
+            for col_index in range(num_cols):
+                original_col = self.column_mapping[col_index]
+                cell_position = col_to_position[original_col]
+                cell = row_cells[cell_position]
 
                 # Generate address using COMPRESSED indices (not original)
                 # This keeps the dict compact and avoids sparse coordinates
-                address = converter.parse_colindex(colindex + 1) + str(rowindex + 1)
+                address = col_addresses[col_index] + row_addr_suffix
 
-                rows.append(
-                    {
-                        "Address": address,
-                        "Value": i[j],
-                        "Format": self.get_format(cell),
-                    }
-                )
+                addresses.append(address)
+                values.append(row_data[col_index])
+                formats.append(self.get_format(cell))
 
-        markdown = pd.DataFrame(rows, columns=["Address", "Value", "Format"])
+        # Create DataFrame from pre-built lists (more efficient than appending dicts)
+        markdown = pd.DataFrame(
+            {"Address": addresses, "Value": values, "Format": formats}
+        )
         return markdown
 
     # Checks for identical dtypes across row/column
@@ -489,12 +537,9 @@ class SheetCompressor:
             >>> sheet_compressor.convert_compressed_to_original("A1,B2:B5")
             "A1,C3:C8"  # multiple ranges
         """
-        from spreadsheet_llm.cell_range_utils import (
-            convert_compressed_to_original as convert_func,
-        )
 
         mapping = self.get_coordinate_mapping()
-        return convert_func(compressed_coord, mapping)
+        return convert_compressed_to_original(compressed_coord, mapping)
 
     # Key-Value to Value-Key for categories
     def inverted_category(self, markdown):

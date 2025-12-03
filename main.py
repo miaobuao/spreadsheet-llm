@@ -1,424 +1,195 @@
+import asyncio
+import json
 import logging
-import os
+import platform
+from datetime import datetime
 from pathlib import Path
 
-from termcolor import colored
-
-from spreadsheet_llm import SpreadsheetLLMWrapper
-from spreadsheet_llm.spreadsheet_llm_wrapper import CellRangeItemWithEncoding
-
-
-# Custom colored formatter for stdout
-class ColoredFormatter(logging.Formatter):
-    """Custom formatter that adds colors to log levels"""
-
-    LEVEL_COLORS = {
-        "DEBUG": "cyan",
-        "INFO": "green",
-        "WARNING": "yellow",
-        "ERROR": "red",
-        "CRITICAL": "red",
-    }
-
-    def format(self, record):
-        # Format the message with the parent formatter
-        log_message = super().format(record)
-
-        # Add color to the level name in the output
-        level_name = record.levelname
-        if level_name in self.LEVEL_COLORS:
-            # Color the entire log line based on level
-            log_message = colored(log_message, self.LEVEL_COLORS[level_name])
-
-        return log_message
-
-
-# Configure logging with colored output for stdout
-# Only configure root logger to avoid duplicate logs
-console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.DEBUG)
-colored_formatter = ColoredFormatter(
-    fmt="[%(asctime)s][%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S"
+from claude_agent_sdk import (
+    AssistantMessage,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    SystemMessage,
+    TextBlock,
+    ThinkingBlock,
+    ToolResultBlock,
+    ToolUseBlock,
 )
-console_handler.setFormatter(colored_formatter)
+from prompt_toolkit import PromptSession
+from prompt_toolkit.formatted_text import HTML
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
 
-# Configure root logger
-logging.root.setLevel(logging.DEBUG)
-logging.root.handlers = []
-logging.root.addHandler(console_handler)
+# Initialize console and prompt session
+console = Console()
+session = PromptSession()
 
-# Get logger for this module
-logger = logging.getLogger(__name__)
+# Setup logging to file only
+log_dir = Path("logs")
+log_dir.mkdir(exist_ok=True)
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+log_file_path = log_dir / f"agent_{timestamp}.log"
 
-original_size = 0
-new_size = 0
+logger = logging.getLogger("agent")
+logger.setLevel(logging.DEBUG)
+
+file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
+file_handler.setLevel(logging.DEBUG)
+file_formatter = logging.Formatter(
+    "%(asctime)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+)
+file_handler.setFormatter(file_formatter)
+logger.addHandler(file_handler)
+
+console.print(f"[dim]Logging to: {log_file_path}[/dim]")
+
+
+def get_system_prompt() -> str:
+    """Generate system prompt with environment information."""
+    cwd = Path.cwd()
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    return f"""You are an AI coding assistant that can help with various tasks.
+
+<environment>
+- Working Directory: {cwd}
+- Platform: {platform.system()}
+- Python Version: {platform.python_version()}
+- Package Manager: uv
+- Today's Date: {today}
+</environment>
+
+Important:
+- Always use 'uv run' to execute Python scripts (e.g., 'uv run python script.py' or 'uv run pytest')
+- Never use 'python' or 'pip' commands directly
+- Always consider the current working directory and environment when working with files."""
+
+
+# Initialize Claude Agent with built-in tools
+client = ClaudeSDKClient(
+    ClaudeAgentOptions(
+        setting_sources=["project"],
+        allowed_tools=["Read", "Write", "Edit", "Bash", "Skill"],
+        permission_mode="acceptEdits",
+        system_prompt=get_system_prompt(),
+    )
+)
+
+
+async def main():
+    console.print(
+        Panel.fit(
+            "[bold cyan]Claude Agent[/bold cyan]\n[dim]Type 'quit', 'exit', or 'q' to exit[/dim]",
+            border_style="cyan",
+        )
+    )
+
+    await client.connect()
+
+    while True:
+        console.print()
+        user_input = await session.prompt_async(
+            HTML("<ansigreen><b>></b></ansigreen> ")
+        )
+
+        if not user_input:
+            continue
+
+        if user_input.lower() in ["quit", "exit", "q"]:
+            console.print("\n[bold yellow]👋 Goodbye![/bold yellow]")
+            logger.info("=" * 80)
+            logger.info("User exited the agent")
+            logger.info("=" * 80)
+            break
+
+        # Log user input with separator
+        logger.info("")
+        logger.info("-" * 80)
+        logger.info(f"USER INPUT: {user_input}")
+        logger.info("-" * 80)
+
+        await client.query(user_input)
+        logger.debug("Query sent to Claude SDK")
+
+        with console.status("[bold blue]Processing...", spinner="dots"):
+            async for msg in client.receive_response():
+                if isinstance(msg, SystemMessage):
+                    logger.debug("System message received (skipped)")
+                    continue
+                elif isinstance(msg, AssistantMessage):
+                    console.print()
+                    logger.info(
+                        f"Assistant message received with {len(msg.content)} content blocks"
+                    )
+
+                    for i, block in enumerate(msg.content, 1):
+                        if isinstance(block, TextBlock):
+                            console.print(
+                                Panel(
+                                    Markdown(block.text),
+                                    border_style="blue",
+                                    padding=(1, 2),
+                                )
+                            )
+                            logger.info(f"[Block {i}] TEXT:")
+                            logger.info(block.text)
+
+                        elif isinstance(block, ThinkingBlock):
+                            console.print(
+                                Panel(
+                                    f"[dim italic]{block.thinking}[/dim italic]",
+                                    title="[dim]Thinking[/dim]",
+                                    border_style="dim",
+                                    padding=(0, 1),
+                                )
+                            )
+                            logger.info(f"[Block {i}] THINKING:")
+                            logger.info(block.thinking)
+
+                        elif isinstance(block, ToolUseBlock):
+                            params_str = json.dumps(
+                                block.input, indent=2, ensure_ascii=False
+                            )
+                            console.print(
+                                Panel(
+                                    f"[cyan]Tool:[/cyan] {block.name}\n[dim]ID:[/dim] {block.id}\n[dim]Parameters:[/dim]\n{params_str}",
+                                    title="[cyan]🔧 Tool Use[/cyan]",
+                                    border_style="cyan",
+                                    padding=(0, 1),
+                                )
+                            )
+                            logger.info(f"[Block {i}] TOOL USE:")
+                            logger.info(f"  Tool Name: {block.name}")
+                            logger.info(f"  Tool ID: {block.id}")
+                            logger.info("  Parameters:")
+                            for line in params_str.split("\n"):
+                                logger.info(f"    {line}")
+
+                        elif isinstance(block, ToolResultBlock):
+                            status_color = "green" if not block.is_error else "red"
+                            status_icon = "✓" if not block.is_error else "✗"
+                            console.print(
+                                Panel(
+                                    f"[{status_color}]{status_icon}[/{status_color}] [dim]Tool ID:[/dim] {block.tool_use_id}",
+                                    title=f"[{status_color}]Tool Result[/{status_color}]",
+                                    border_style=status_color,
+                                    padding=(0, 1),
+                                )
+                            )
+                            status_text = "SUCCESS" if not block.is_error else "ERROR"
+                            logger.info(f"[Block {i}] TOOL RESULT: {status_text}")
+                            logger.info(f"  Tool Use ID: {block.tool_use_id}")
+                            if block.is_error:
+                                logger.error(f"  Error details: {block}")
+
+                        else:
+                            console.print(block)
+                            logger.warning(
+                                f"[Block {i}] UNKNOWN BLOCK TYPE: {type(block)}"
+                            )
+                            logger.debug(f"  Block content: {block}")
 
 
 if __name__ == "__main__":
-    import argparse
-
-    # Create argument parser
-    parser = argparse.ArgumentParser(
-        description="SpreadsheetLLM: Compress spreadsheet files using LLM-friendly format",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Compress a single file in simple mode
-  python main.py input.xlsx
-
-  # Compress with format-aware mode
-  python main.py input.xlsx --format-aware
-
-  # Specify custom output directory
-  python main.py input.xlsx -f -o results/
-
-  # Enable LLM recognition with default model
-  python main.py input.xlsx -r
-
-  # Use specific model for recognition
-  python main.py input.xlsx -r -m gpt-4o
-
-  # Recognition with original coordinates
-  python main.py input.xlsx -r --original-coords
-
-  # Custom prompt for recognition
-  python main.py input.xlsx -r -p "Find all tables with revenue data"
-
-  # Process a specific sheet by index (0-based)
-  python main.py input.xlsx -s 1
-
-  # Process a specific sheet by name
-  python main.py input.xlsx -s "Financial Statements"
-
-  # Use custom OpenAI-compatible API (e.g., local LLM)
-  export OPENAI_BASE_URL=http://localhost:1234/v1
-  export OPENAI_API_KEY=your-api-key
-  python main.py input.xlsx -r
-
-Environment Variables:
-  OPENAI_API_KEY      OpenAI API key (optional if already configured)
-  OPENAI_BASE_URL     Custom OpenAI-compatible API endpoint (e.g., for local models)
-        """,
-    )
-
-    # Required arguments
-    parser.add_argument(
-        "input_file", type=str, help="Path to the input Excel file (.xlsx, .xlsb, .xls)"
-    )
-
-    # Optional arguments
-    parser.add_argument(
-        "-f",
-        "--format-aware",
-        action="store_true",
-        help="Enable format-aware aggregation (groups by value AND category)",
-    )
-
-    parser.add_argument(
-        "-o",
-        "--output-dir",
-        type=str,
-        default="output",
-        help="Output directory for compressed files (default: output/)",
-    )
-
-    parser.add_argument(
-        "-r",
-        "--recognize",
-        action="store_true",
-        help="Enable LLM-based cell range recognition (requires --model)",
-    )
-
-    parser.add_argument(
-        "-m",
-        "--model",
-        type=str,
-        default="gpt-4o-mini",
-        help="LLM model to use for recognition (default: gpt-4o-mini). Examples: gpt-4o-mini, gpt-4o, gpt-3.5-turbo",
-    )
-
-    parser.add_argument(
-        "-p",
-        "--user-prompt",
-        type=str,
-        default=None,
-        help="Custom prompt for LLM recognition (optional)",
-    )
-
-    parser.add_argument(
-        "--original-coords",
-        action="store_true",
-        help="Return original spreadsheet coordinates instead of compressed coordinates (only with --recognize)",
-    )
-
-    parser.add_argument(
-        "-s",
-        "--sheet",
-        type=str,
-        default=None,
-        help="Sheet to process. Can be sheet index (0-based) or sheet name (default: None, uses active sheet)",
-    )
-
-    # Parse arguments
-    args = parser.parse_args()
-
-    if args.original_coords and not args.recognize:
-        logger.warning("--original-coords flag is only used with --recognize, ignoring")
-
-    # Log mode
-    if args.format_aware:
-        logger.info("Running in FORMAT-AWARE mode (dict groups by value AND category)")
-    else:
-        logger.info("Running in SIMPLE mode (dict groups by value only)")
-        logger.info("Use --format-aware or -f flag to enable format-aware aggregation")
-
-    if args.recognize:
-        logger.info(f"LLM recognition ENABLED with model: {args.model}")
-        coord_mode = "original" if args.original_coords else "compressed"
-        logger.info(f"Coordinate mode: {coord_mode}")
-
-    # Validate input file
-    file = Path(args.input_file)
-    if not file.exists():
-        logger.error(f"Input file not found: {file}")
-        exit(1)
-
-    if file.suffix.lower() not in [".xlsx", ".xls", ".xlsb"]:
-        logger.error(
-            f"Input file must be an Excel file (.xlsx, .xlsb, or .xls): {file}"
-        )
-        exit(1)
-
-    logger.info(f"Input file: {file}")
-
-    # Create output directory if it doesn't exist
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Output directory: {output_dir}")
-
-    # Initialize model if recognition is enabled
-    model = None
-    if args.recognize:
-        try:
-            from langchain_openai import ChatOpenAI
-
-            # Check for custom OpenAI configuration
-            openai_base_url = os.environ.get("OPENAI_BASE_URL")
-            openai_api_key = os.environ.get("OPENAI_API_KEY")
-
-            # Build ChatOpenAI initialization parameters
-            model_params = {"model": args.model}
-
-            if openai_base_url:
-                model_params["base_url"] = openai_base_url
-                logger.info(f"Using custom OpenAI base URL: {openai_base_url}")
-
-            if openai_api_key:
-                model_params["api_key"] = openai_api_key
-                logger.info("Using API key from OPENAI_API_KEY environment variable")
-
-            model = ChatOpenAI(**model_params)
-            logger.info(f"Initialized model: {args.model}")
-        except Exception as e:
-            logger.error(f"Failed to initialize model: {e}")
-            exit(1)
-
-    # Process spreadsheet
-    wrapper = SpreadsheetLLMWrapper()
-
-    if wb := wrapper.read_spreadsheet(file):
-        # Parse sheet argument: try to convert to int, otherwise use as string
-        if args.sheet is None:
-            sheet_name = None
-            logger.info(f"Available sheets in workbook: {wb.sheetnames}")
-            logger.info("Using active sheet (no -s/--sheet specified)")
-        else:
-            try:
-                sheet_name = int(args.sheet)
-                if sheet_name < 0 or sheet_name >= len(wb.sheetnames):
-                    logger.error(
-                        f"Sheet index {sheet_name} out of range. Valid range: 0 to {len(wb.sheetnames) - 1}"
-                    )
-                    exit(1)
-            except ValueError:
-                sheet_name = args.sheet
-                if sheet_name not in wb.sheetnames:
-                    logger.error(
-                        f"Sheet '{sheet_name}' not found. Available sheets: {wb.sheetnames}"
-                    )
-                    exit(1)
-
-            # Log available sheets
-            logger.info(f"Available sheets in workbook: {wb.sheetnames}")
-
-        if result := wrapper.compress_spreadsheet(
-            wb,
-            format_aware=args.format_aware,
-            sheet_name=sheet_name,
-        ):
-            # Log anchor information
-            row_count = len(result.anchors.row_anchors)
-            col_count = len(result.anchors.column_anchors)
-            orig_rows, orig_cols = result.anchors.original_shape
-            row_ratio = (row_count / orig_rows * 100) if orig_rows > 0 else 0
-            col_ratio = (col_count / orig_cols * 100) if orig_cols > 0 else 0
-
-            logger.info("=" * 60)
-            logger.info("ANCHOR INFORMATION:")
-            logger.info(f"  Row anchors: {row_count} (from {orig_rows} original rows)")
-            logger.info(
-                f"  Column anchors: {col_count} (from {orig_cols} original columns)"
-            )
-            logger.info(
-                f"  Compression ratio: {row_ratio:.1f}% rows, {col_ratio:.1f}% columns retained"
-            )
-            logger.info("=" * 60)
-
-            # Generate output file names
-            base_name = (
-                output_dir / file.stem
-            )  # Use stem to get filename without extension
-            suffix = "_format_aware" if args.format_aware else ""
-
-            areas_file = str(base_name) + suffix + "_areas.txt"
-            dict_file = str(base_name) + suffix + "_dict.txt"
-            mapping_file = str(base_name) + suffix + "_mapping.json"
-            compressed_sheet_file = str(base_name) + suffix + "_compressed.xlsx"
-
-            # Write output files
-            wrapper.write_areas(areas_file, result.areas, result.sheet_compressor)
-            wrapper.write_dict(dict_file, result.compress_dict)
-            wrapper.write_mapping(mapping_file, result.sheet_compressor)
-            result.compressed_sheet.to_excel(
-                compressed_sheet_file, index=False, header=False
-            )
-
-            logger.info("Output files:")
-            logger.info(f"  - {areas_file}")
-            logger.info(f"  - {dict_file}")
-            logger.info(f"  - {mapping_file}")
-            logger.info(f"  - {compressed_sheet_file}")
-
-            # Calculate compression ratio
-            original_size += os.path.getsize(file)
-            new_size += os.path.getsize(areas_file)
-            new_size += os.path.getsize(dict_file)
-            logger.info("Compression Ratio: {:.2f}".format(original_size / new_size))
-
-            # Run LLM recognition if enabled
-            if args.recognize:
-                if model is None:
-                    logger.error("Model not initialized. Cannot run recognition.")
-                    exit(1)
-
-                total_anchors = len(result.anchors.row_anchors) + len(
-                    result.anchors.column_anchors
-                )
-
-                logger.info("=" * 60)
-                logger.info("Running LLM-based cell range recognition...")
-                logger.info(
-                    f"Based on anchor count ({len(result.anchors.row_anchors)} rows, {len(result.anchors.column_anchors)} columns, total: {total_anchors}), you can choose different models:"
-                )
-                logger.info(
-                    "  - Small anchors (<50 total): Fast models like gpt-4o-mini"
-                )
-                logger.info(
-                    "  - Medium anchors (50-200 total): Balanced models like gpt-4o"
-                )
-                logger.info(
-                    "  - Large anchors (>200 total): Powerful models like gpt-4o or Claude"
-                )
-                logger.info("=" * 60)
-
-                try:
-                    if args.original_coords:
-                        recognition_result = (
-                            wrapper.recognize_original_with_compressed_range(
-                                wb,
-                                result,
-                                model,
-                                args.user_prompt,
-                                format_aware=args.format_aware,
-                            )
-                        )
-                    else:
-                        recognition_result = wrapper.recognize_with_compressed_range(
-                            wb,
-                            result,
-                            model,
-                            args.user_prompt,
-                            format_aware=args.format_aware,
-                        )
-
-                    # Display results
-                    logger.info("=" * 80)
-                    logger.info("RECOGNITION RESULTS:")
-                    logger.info("=" * 80)
-                    logger.info(f"\nReasoning:\n{recognition_result.reasoning}\n")
-                    logger.info(
-                        f"Found {len(recognition_result.items)} cell range(s):\n"
-                    )
-
-                    for i, item in enumerate(recognition_result.items, 1):
-                        title = item.title or "Untitled"
-                        logger.info(f"[{i}] {title}")
-                        logger.info(f"    Range: {item.range}")
-
-                        # Display compressed_dict if available
-                        if isinstance(item, CellRangeItemWithEncoding):
-                            dict_size = len(item.compressed_dict)
-                            logger.info(
-                                f"    Compressed Encoding: {dict_size} unique values"
-                            )
-
-                            logger.info("    Preview:")
-                            for key, cells in item.compressed_dict.items():
-                                cells_str = ",".join(cells)
-                                logger.info(f"      {key} → {cells_str}")
-
-                        logger.info("")  # Empty line between ranges
-
-                    # Save recognition results to file
-                    recognition_file = str(base_name) + suffix + "_recognition.txt"
-                    with open(recognition_file, "w", encoding="utf-8") as f:
-                        f.write("=== LLM CELL RANGE RECOGNITION ===\n\n")
-                        f.write(f"Model: {args.model}\n")
-                        f.write(
-                            f"Coordinate mode: {'original' if args.original_coords else 'compressed'}\n\n"
-                        )
-                        f.write(f"Reasoning:\n{recognition_result.reasoning}\n\n")
-                        f.write(
-                            f"Found {len(recognition_result.items)} cell ranges:\n\n"
-                        )
-                        for i, item in enumerate(recognition_result.items, 1):
-                            title = item.title or "Untitled"
-                            f.write(f"[{i}] {title}\n")
-                            f.write(f"    Range: {item.range}\n")
-
-                            # Write compressed_dict if available
-                            if isinstance(item, CellRangeItemWithEncoding):
-                                dict_size = len(item.compressed_dict)
-                                f.write(
-                                    f"    Compressed Encoding: {dict_size} unique values\n"
-                                )
-                                f.write("    Entries:\n")
-                                for key, cells in item.compressed_dict.items():
-                                    cells_str = ",".join(cells)
-                                    f.write(f"      {key} → {cells_str}\n")
-                            f.write("\n")
-
-                    logger.info(f"\nRecognition results saved to: {recognition_file}")
-                    logger.info("=" * 80)
-
-                except Exception as e:
-                    logger.error(f"Recognition failed: {e}")
-                    import traceback
-
-                    logger.debug(traceback.format_exc())
-        else:
-            logger.error("Compression failed")
-            exit(1)
-    else:
-        logger.error("Failed to read spreadsheet")
-        exit(1)
+    asyncio.run(main())

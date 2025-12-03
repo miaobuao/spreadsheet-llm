@@ -7,3 +7,5 @@ __pycache__
 /logs
 /cache/*
 .env
+dataset/
+workspaces/

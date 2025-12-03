@@ -17,6 +17,12 @@ from spreadsheet_llm.spreadsheet_llm_wrapper import (
     CellRangeListWithEncoding,
     SpreadsheetLLMWrapper,
 )
+from spreadsheet_llm.unified_workbook import (
+    UnifiedWorkbook,
+    UnifiedWorksheet,
+    UnifiedCell,
+    create_unified_workbook,
+)
 
 __version__ = "0.0.1"
 
@@ -31,4 +37,8 @@ __all__ = [
     "IndexColumnConverter",
     "CellRangeUtils",
     "compress_range",
+    "UnifiedWorkbook",
+    "UnifiedWorksheet",
+    "UnifiedCell",
+    "create_unified_workbook",
 ]

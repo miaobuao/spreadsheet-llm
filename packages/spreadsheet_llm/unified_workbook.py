@@ -5,7 +5,7 @@ Provides a consistent API regardless of the underlying library (openpyxl, pyxlsb
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, List, Optional
+from typing import Any, Iterator, List, Optional
 
 import openpyxl
 import openpyxl.workbook
@@ -106,6 +106,28 @@ class UnifiedWorksheet(ABC):
 
         Returns:
             UnifiedCell instance
+        """
+        pass
+
+    @abstractmethod
+    def iter_rows(
+        self,
+        min_row: int | None = None,
+        max_row: int | None = None,
+        min_col: int | None = None,
+        max_col: int | None = None,
+    ) -> Iterator[tuple[UnifiedCell, ...]]:
+        """
+        Iterate over cells in the specified range.
+
+        Args:
+            min_row: Minimum row index (1-based, inclusive)
+            max_row: Maximum row index (1-based, inclusive)
+            min_col: Minimum column index (1-based, inclusive)
+            max_col: Maximum column index (1-based, inclusive)
+
+        Yields:
+            Tuples of UnifiedCell instances for each row in the range
         """
         pass
 
@@ -233,6 +255,21 @@ class OpenpyxlWorksheet(UnifiedWorksheet):
 
     def cell(self, row: int, column: int) -> UnifiedCell:
         return OpenpyxlCell(self._ws.cell(row=row, column=column))
+
+    def iter_rows(
+        self,
+        min_row: int | None = None,
+        max_row: int | None = None,
+        min_col: int | None = None,
+        max_col: int | None = None,
+    ) -> Iterator[tuple[OpenpyxlCell, ...]]:
+        for row_cells in self._ws.iter_rows(
+            min_row=min_row,
+            max_row=max_row,
+            min_col=min_col,
+            max_col=max_col,
+        ):
+            yield tuple(OpenpyxlCell(cell) for cell in row_cells)
 
 
 class OpenpyxlWorkbook(UnifiedWorkbook):
@@ -363,6 +400,50 @@ class PyxlsbWorksheet(UnifiedWorksheet):
         # pyxlsb returns Cell objects with .v attribute for value
         value = cell_data.v if hasattr(cell_data, "v") else cell_data
         return PyxlsbCell(value)
+
+    def iter_rows(
+        self,
+        min_row: int | None = None,
+        max_row: int | None = None,
+        min_col: int | None = None,
+        max_col: int | None = None,
+    ) -> Iterator[tuple[PyxlsbCell, ...]]:
+        self._load_sheet_data()
+
+        if self._sheet_data is None:
+            return
+
+        # Determine the actual range
+        total_rows = len(self._sheet_data)
+        start_row = (min_row or 1) - 1  # Convert to 0-based
+        end_row = (max_row or total_rows) - 1  # Convert to 0-based
+
+        # Clamp to valid range
+        start_row = max(0, min(start_row, total_rows - 1))
+        end_row = max(0, min(end_row, total_rows - 1))
+
+        for row_idx in range(start_row, end_row + 1):
+            row_data = self._sheet_data[row_idx]
+            total_cols = len(row_data)
+
+            start_col = (min_col or 1) - 1  # Convert to 0-based
+            end_col = (max_col or total_cols) - 1  # Convert to 0-based
+
+            # Clamp to valid range
+            start_col = max(0, min(start_col, total_cols - 1)) if total_cols > 0 else 0
+            end_col = max(0, min(end_col, total_cols - 1)) if total_cols > 0 else 0
+
+            # Generate cells for this row
+            cells = []
+            for col_idx in range(start_col, end_col + 1):
+                if col_idx < len(row_data):
+                    cell_data = row_data[col_idx]
+                    value = cell_data.v if hasattr(cell_data, "v") else cell_data
+                    cells.append(PyxlsbCell(value))
+                else:
+                    cells.append(PyxlsbCell(None))
+
+            yield tuple(cells)
 
 
 class PyxlsbWorkbook(UnifiedWorkbook):
